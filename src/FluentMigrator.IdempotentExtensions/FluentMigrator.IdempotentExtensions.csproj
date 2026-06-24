@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <PackageId>FluentMigrator.IdempotentExtensions</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>TropinAlexey</Authors>
+    <Description>Idempotent extension methods for FluentMigrator migrations. CreateTableIfNotExists, CreateColumnIfNotExists, CreateIndexIfNotExists, and more — safe to run multiple times on any database.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>FluentMigrator;migrations;database;idempotent;extensions</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentMigrator" Version="5.*" />
+  </ItemGroup>
+
+</Project>

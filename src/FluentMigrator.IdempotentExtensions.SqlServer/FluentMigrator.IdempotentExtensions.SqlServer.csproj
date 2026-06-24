@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <PackageId>FluentMigrator.IdempotentExtensions.SqlServer</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>TropinAlexey</Authors>
+    <Description>SQL Server-specific idempotent extension methods for FluentMigrator: DropDefaultConstraintIfExists and other T-SQL helpers.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>FluentMigrator;migrations;sqlserver;mssql;idempotent;extensions</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FluentMigrator.IdempotentExtensions\FluentMigrator.IdempotentExtensions.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FluentMigrator.IdempotentExtensions.SqlServer/FluentMigrator.IdempotentExtensions.SqlServer.csproj" />
+    <Project Path="src/FluentMigrator.IdempotentExtensions/FluentMigrator.IdempotentExtensions.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FluentMigrator.IdempotentExtensions.Tests/FluentMigrator.IdempotentExtensions.Tests.csproj" />
+  </Folder>
+</Solution>
