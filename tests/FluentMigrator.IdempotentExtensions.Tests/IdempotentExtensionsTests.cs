@@ -106,6 +106,47 @@ public sealed class IdempotentExtensionsTests : IDisposable
         Assert.Null(ex);
     }
 
+    [Fact]
+    public void DropConstraintIfExists_DoesNotThrowWhenConstraintMissing()
+    {
+        Run(new CreateTableMigration());
+        var ex = Record.Exception(() => Run(new DropConstraintMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void DropTableIfExists_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new DropTableMigration());
+        var ex = Record.Exception(() => Run(new DropTableMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void DropTableIfExists_DoesNotThrowWhenTableMissing()
+    {
+        var ex = Record.Exception(() => Run(new DropTableMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void RenameColumnIfExists_DoesNotThrowWhenColumnMissing()
+    {
+        Run(new CreateTableMigration());
+        var ex = Record.Exception(() => Run(new RenameNonExistentColumnMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void CreateUniqueConstraintIfNotExists_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new AddUniqueConstraintMigration());
+        var ex = Record.Exception(() => Run(new AddUniqueConstraintMigration()));
+        Assert.Null(ex);
+    }
+
     public void Dispose()
     {
         if (File.Exists(_dbPath))
@@ -186,6 +227,50 @@ internal sealed class DeleteColumnMigration : Migration
     public override void Up()
     {
         this.DeleteColumnIfExists("test_users", "age", schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(7)]
+internal sealed class DropConstraintMigration : Migration
+{
+    public override void Up()
+    {
+        this.DropConstraintIfExists("test_users", "nonexistent_constraint", schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(8)]
+internal sealed class DropTableMigration : Migration
+{
+    public override void Up()
+    {
+        this.DropTableIfExists("test_users", schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(9)]
+internal sealed class RenameNonExistentColumnMigration : Migration
+{
+    public override void Up()
+    {
+        this.RenameColumnIfExists("test_users", "nonexistent_col", "new_col", schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(10)]
+internal sealed class AddUniqueConstraintMigration : Migration
+{
+    public override void Up()
+    {
+        this.CreateUniqueConstraintIfNotExists("test_users", "uc_users_email", new[] { "email" }, schemaName: "");
     }
 
     public override void Down() { }

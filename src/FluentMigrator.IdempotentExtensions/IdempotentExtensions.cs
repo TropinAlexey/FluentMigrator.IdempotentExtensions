@@ -185,6 +185,25 @@ public static class IdempotentExtensions
     }
 
     /// <summary>
+    /// Drops a named UNIQUE or CHECK constraint from <paramref name="tableName"/> if it exists.
+    /// Works on all databases supported by FluentMigrator.
+    /// For SQL Server DEFAULT constraints use <c>DropDefaultConstraintIfExists</c> from the SqlServer package.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="constraintName">Name of the constraint to drop.</param>
+    /// <param name="schemaName">Database schema. Defaults to <c>dbo</c>.</param>
+    public static void DropConstraintIfExists(
+        this Migration self,
+        string tableName,
+        string constraintName,
+        string schemaName = "dbo")
+    {
+        if (self.Schema.Schema(schemaName).Table(tableName).Constraint(constraintName).Exists())
+            self.Delete.UniqueConstraint(constraintName).FromTable(tableName).InSchema(schemaName);
+    }
+
+    /// <summary>
     /// Drops the primary key or unique constraint named <paramref name="keyName"/> if it exists.
     /// </summary>
     /// <param name="self">The migration instance.</param>
@@ -202,6 +221,87 @@ public static class IdempotentExtensions
         return self.Schema.Schema(schemaName).Table(tableName).Constraint(keyName).Exists()
             ? configureDelete(self.Delete.UniqueConstraint(keyName))
             : null;
+    }
+
+    /// <summary>
+    /// Drops <paramref name="tableName"/> if it exists.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Name of the table to drop.</param>
+    /// <param name="schemaName">Database schema. Defaults to <c>dbo</c>.</param>
+    public static void DropTableIfExists(
+        this Migration self,
+        string tableName,
+        string schemaName = "dbo")
+    {
+        if (self.Schema.Schema(schemaName).Table(tableName).Exists())
+            self.Delete.Table(tableName).InSchema(schemaName);
+    }
+
+    /// <summary>
+    /// Creates a named UNIQUE constraint on <paramref name="columns"/> if it does not already exist.
+    /// Works on all databases supported by FluentMigrator.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="constraintName">Name of the unique constraint to create.</param>
+    /// <param name="columns">Columns included in the constraint.</param>
+    /// <param name="schemaName">Database schema. Defaults to <c>dbo</c>.</param>
+    public static void CreateUniqueConstraintIfNotExists(
+        this Migration self,
+        string tableName,
+        string constraintName,
+        string[] columns,
+        string schemaName = "dbo")
+    {
+        if (!self.Schema.Schema(schemaName).Table(tableName).Constraint(constraintName).Exists())
+            self.Create.UniqueConstraint(constraintName)
+                .OnTable(tableName)
+                .WithSchema(schemaName)
+                .Columns(columns);
+    }
+
+    /// <summary>
+    /// Renames <paramref name="oldName"/> column to <paramref name="newName"/> if the source column exists.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="oldName">Current column name.</param>
+    /// <param name="newName">New column name.</param>
+    /// <param name="schemaName">Database schema. Defaults to <c>dbo</c>.</param>
+    public static void RenameColumnIfExists(
+        this Migration self,
+        string tableName,
+        string oldName,
+        string newName,
+        string schemaName = "dbo")
+    {
+        if (self.Schema.Schema(schemaName).Table(tableName).Column(oldName).Exists())
+            self.Rename.Column(oldName).OnTable(tableName).InSchema(schemaName).To(newName);
+    }
+
+    /// <summary>
+    /// Creates <paramref name="schemaName"/> if it does not already exist.
+    /// Not supported on SQLite.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="schemaName">Schema to create.</param>
+    public static void CreateSchemaIfNotExists(this Migration self, string schemaName)
+    {
+        if (!self.Schema.Schema(schemaName).Exists())
+            self.Create.Schema(schemaName);
+    }
+
+    /// <summary>
+    /// Drops <paramref name="schemaName"/> if it exists.
+    /// Not supported on SQLite.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="schemaName">Schema to drop.</param>
+    public static void DropSchemaIfExists(this Migration self, string schemaName)
+    {
+        if (self.Schema.Schema(schemaName).Exists())
+            self.Delete.Schema(schemaName);
     }
 
     private static bool TableExists(this Migration self, string tableName, string schemaName)

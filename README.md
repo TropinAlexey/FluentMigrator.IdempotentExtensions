@@ -2,27 +2,27 @@
 
 Idempotent extension methods for [FluentMigrator](https://fluentmigrator.github.io/) migrations — safe to run multiple times on any database.
 
-[![NuGet](https://img.shields.io/nuget/v/FluentMigrator.IdempotentExtensions.svg)](https://www.nuget.org/packages/FluentMigrator.IdempotentExtensions/)
-[![NuGet (SqlServer)](https://img.shields.io/nuget/v/FluentMigrator.IdempotentExtensions.SqlServer.svg)](https://www.nuget.org/packages/FluentMigrator.IdempotentExtensions.SqlServer/)
+[![NuGet](https://img.shields.io/nuget/v/TropinAlexey.FluentMigrator.IdempotentExtensions.svg)](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions/)
+[![NuGet (SqlServer)](https://img.shields.io/nuget/v/TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer.svg)](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer/)
 [![CI](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/actions/workflows/ci.yml/badge.svg)](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/actions/workflows/ci.yml)
 
 ## Packages
 
 | Package | Description |
 |---------|-------------|
-| `FluentMigrator.IdempotentExtensions` | DB-agnostic helpers (SQL Server, PostgreSQL, MySQL, SQLite) |
-| `FluentMigrator.IdempotentExtensions.SqlServer` | SQL Server / Azure SQL specific helpers |
+| `TropinAlexey.FluentMigrator.IdempotentExtensions` | DB-agnostic helpers (SQL Server, PostgreSQL, MySQL, SQLite) |
+| `TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer` | SQL Server / Azure SQL specific helpers |
 
 ## Installation
 
 ```shell
-dotnet add package FluentMigrator.IdempotentExtensions
+dotnet add package TropinAlexey.FluentMigrator.IdempotentExtensions
 ```
 
 For SQL Server-specific helpers (e.g. `DropDefaultConstraintIfExists`):
 
 ```shell
-dotnet add package FluentMigrator.IdempotentExtensions.SqlServer
+dotnet add package TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer
 ```
 
 ## Quick Start
@@ -50,21 +50,24 @@ public class CreateUsersTable : Migration
         this.CreateIndexIfNotExists("users", "email",
             idx => idx.Ascending());
 
+        // Creates unique constraint only if it doesn't exist
+        this.CreateUniqueConstraintIfNotExists("users", "uc_users_email", new[] { "email" });
+
         // Creates audit log table (users_log) if it doesn't exist
         this.CreateLogTableIfNotExists("users");
     }
 
     public override void Down()
     {
-        Delete.Table("users");
-        Delete.Table("users_log");
+        this.DropTableIfExists("users_log");
+        this.DropTableIfExists("users");
     }
 }
 ```
 
 ## API Reference
 
-### Core package (`FluentMigrator.IdempotentExtensions`)
+### Core package (`TropinAlexey.FluentMigrator.IdempotentExtensions`)
 
 #### `WithIdColumn()`
 
@@ -88,6 +91,19 @@ IFluentSyntax? CreateTableIfNotExists(
 ```
 
 Creates a table only if it does not already exist. Returns `null` if already exists.
+
+---
+
+#### `DropTableIfExists()`
+
+```csharp
+void DropTableIfExists(
+    this Migration self,
+    string tableName,
+    string schemaName = "dbo")
+```
+
+Drops a table only if it exists. No-op otherwise.
 
 ---
 
@@ -117,6 +133,21 @@ void DeleteColumnIfExists(
 ```
 
 Drops a column only if it exists. No-op otherwise.
+
+---
+
+#### `RenameColumnIfExists()`
+
+```csharp
+void RenameColumnIfExists(
+    this Migration self,
+    string tableName,
+    string oldName,
+    string newName,
+    string schemaName = "dbo")
+```
+
+Renames a column only if the source column exists. No-op if `oldName` is not found.
 
 ---
 
@@ -190,6 +221,40 @@ Drops a named index only if it exists.
 
 ---
 
+#### `CreateUniqueConstraintIfNotExists()`
+
+```csharp
+void CreateUniqueConstraintIfNotExists(
+    this Migration self,
+    string tableName,
+    string constraintName,
+    string[] columns,
+    string schemaName = "dbo")
+```
+
+Creates a named UNIQUE constraint if it does not already exist.
+
+```csharp
+this.CreateUniqueConstraintIfNotExists("users", "uc_users_email", new[] { "email" });
+```
+
+---
+
+#### `DropConstraintIfExists()`
+
+```csharp
+void DropConstraintIfExists(
+    this Migration self,
+    string tableName,
+    string constraintName,
+    string schemaName = "dbo")
+```
+
+Drops a named UNIQUE or CHECK constraint if it exists. Works on all databases supported by FluentMigrator.
+For SQL Server DEFAULT constraints use `DropDefaultConstraintIfExists` from the SqlServer package.
+
+---
+
 #### `DropPrimaryKeyIfExists()`
 
 ```csharp
@@ -205,7 +270,27 @@ Drops a primary key or unique constraint by name only if it exists.
 
 ---
 
-### SQL Server package (`FluentMigrator.IdempotentExtensions.SqlServer`)
+#### `CreateSchemaIfNotExists()`
+
+```csharp
+void CreateSchemaIfNotExists(this Migration self, string schemaName)
+```
+
+Creates a schema if it does not already exist. Not supported on SQLite.
+
+---
+
+#### `DropSchemaIfExists()`
+
+```csharp
+void DropSchemaIfExists(this Migration self, string schemaName)
+```
+
+Drops a schema if it exists. Not supported on SQLite.
+
+---
+
+### SQL Server package (`TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer`)
 
 ```csharp
 using FluentMigrator.IdempotentExtensions.SqlServer;
@@ -239,18 +324,25 @@ Alter.Table("users").AlterColumn("status").AsInt32().NotNullable();
 |--------|:----------:|:----------:|:-----:|:------:|
 | `WithIdColumn` | ✅ | ✅ | ✅ | ✅ |
 | `CreateTableIfNotExists` | ✅ | ✅ | ✅ | ✅ |
+| `DropTableIfExists` | ✅ | ✅ | ✅ | ✅ |
 | `CreateColumnIfNotExists` | ✅ | ✅ | ✅ | ✅ |
 | `DeleteColumnIfExists` | ✅ | ✅ | ✅ | ✅ |
+| `RenameColumnIfExists` | ✅ | ✅ | ✅ | ✅ |
 | `CreateLogTableIfNotExists` | ✅ | ✅ | ✅ | ✅ |
 | `CreateIndexIfNotExists` | ✅ | ✅ | ✅ | ✅ |
 | `CreateCompositeIndexIfNotExists` | ✅ | ✅ | ✅ | ✅ |
 | `DropIndexIfExists` | ✅ | ✅ | ✅ | ✅ |
+| `CreateUniqueConstraintIfNotExists` | ✅ | ✅ | ✅ | ✅ |
+| `DropConstraintIfExists` | ✅ | ✅ | ✅ | ✅ |
 | `DropPrimaryKeyIfExists` | ✅ | ✅ | ✅ | ✅ |
+| `CreateSchemaIfNotExists` | ✅ | ✅ | ✅ | ❌ |
+| `DropSchemaIfExists` | ✅ | ✅ | ✅ | ❌ |
 | **SqlServer package** | | | | |
 | `DropDefaultConstraintIfExists` | ✅ | ❌ | ❌ | ❌ |
 
 > **Note on `schemaName`:** The default value is `"dbo"` (SQL Server convention).
 > For PostgreSQL use `"public"`, for MySQL omit the schema or pass the database name.
+> For SQLite pass `""` (empty string) — SQLite has no schema support.
 
 ## License
 

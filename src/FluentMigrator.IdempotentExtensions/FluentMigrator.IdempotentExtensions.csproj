@@ -4,8 +4,8 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
-    <PackageId>FluentMigrator.IdempotentExtensions</PackageId>
-    <Version>1.0.0</Version>
+    <PackageId>TropinAlexey.FluentMigrator.IdempotentExtensions</PackageId>
+    <Version>1.0.1</Version>
     <Authors>TropinAlexey</Authors>
     <Description>Idempotent extension methods for FluentMigrator migrations. CreateTableIfNotExists, CreateColumnIfNotExists, CreateIndexIfNotExists, and more — safe to run multiple times on any database.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
