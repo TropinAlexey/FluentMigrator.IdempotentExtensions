@@ -9,9 +9,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: nuget-publish
-    permissions:
-      id-token: write  # required for OIDC trusted publishing
-      contents: read
+    #permissions:
+    #  id-token: write  # required for OIDC trusted publishing
+    #  contents: read
 
     steps:
       - uses: actions/checkout@v4
