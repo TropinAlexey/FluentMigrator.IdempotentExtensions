@@ -65,6 +65,45 @@ public class CreateUsersTable : Migration
 }
 ```
 
+## Use Cases
+
+#### Idempotent CI/CD deploys
+
+Migration runners are re-invoked on retries, rolling restarts, and repeated pipeline runs. Every method here checks existence first, so the same migration can be applied any number of times without ever failing on "table/column/index already exists".
+
+#### Expand-contract schema changes
+
+Add a new column, backfill it in application code, then drop the old one in a later release — using `CreateColumnIfNotExists` and `DeleteColumnIfExists` for each step. If a deploy fails partway through and the migration re-runs, already-applied steps are skipped instead of throwing.
+
+#### Renaming columns across environments at different versions
+
+`RenameColumnIfExists` only renames when the old column name still exists. Useful when dev/staging/prod (or per-tenant databases) aren't all on the same migration checkpoint — environments where a manual fix already renamed the column are left alone.
+
+#### Adding indexes and constraints after the fact
+
+`CreateIndexIfNotExists`, `CreateCompositeIndexIfNotExists`, and `CreateUniqueConstraintIfNotExists` let you introduce a performance index or a new uniqueness rule without checking whether a previous migration, hotfix, or DBA already created it.
+
+#### Multi-tenant / multi-schema databases
+
+Every method accepts `schemaName`, so the same migration class can loop over several tenant schemas (or `dbo` / `public` / a per-tenant schema) in one pass instead of duplicating migration logic per schema.
+
+#### Standardized audit logging
+
+`CreateLogTableIfNotExists` bootstraps a `{table}_log` table (`id`, `timestamp`, `username`, `action`, `record_id`) for any entity table with one call, instead of hand-writing the same audit schema for every table that needs one.
+
+#### Safe rollback / cleanup steps
+
+`DropTableIfExists`, `DropConstraintIfExists`, `DropPrimaryKeyIfExists`, `DropIndexIfExists`, and `DropSchemaIfExists` make `Down()` migrations and manual recovery scripts safe to re-run, since dropping something that isn't there is a no-op instead of an exception.
+
+#### SQL Server: altering a column blocked by an auto-named DEFAULT constraint
+
+SQL Server auto-generates DEFAULT constraint names, so you often can't `DROP CONSTRAINT` by a name you control before an `AlterColumn`. `DropDefaultConstraintIfExists` (SqlServer package) locates and drops it by column name instead.
+
+```csharp
+this.DropDefaultConstraintIfExists("users", "status");
+Alter.Table("users").AlterColumn("status").AsInt32().NotNullable();
+```
+
 ## API Reference
 
 ### Core package (`TropinAlexey.FluentMigrator.IdempotentExtensions`)
@@ -262,7 +301,7 @@ IFluentSyntax? DropPrimaryKeyIfExists(
     this Migration self,
     string tableName,
     string keyName,
-    Func<IDeleteConstraintOnTableSyntax, IFluentSyntax> configureDelete,
+    Func<IDeleteConstraintInSchemaOptionsSyntax, IFluentSyntax> configureDelete,
     string schemaName = "dbo")
 ```
 

@@ -65,7 +65,7 @@ public static class IdempotentExtensions
         if (self.ColumnExists(tableName, colName, schemaName))
             return null;
 
-        return constructCol(self.Alter.Table(tableName).AddColumn(colName));
+        return constructCol(self.Alter.Table(tableName).InSchema(schemaName).AddColumn(colName));
     }
 
     /// <summary>
@@ -125,7 +125,7 @@ public static class IdempotentExtensions
     {
         var indexName = $"index_{columnName}";
         return !self.Schema.Schema(schemaName).Table(tableName).Index(indexName).Exists()
-            ? configureIndex(self.Create.Index(indexName).OnTable(tableName).OnColumn(columnName))
+            ? configureIndex(self.Create.Index(indexName).OnTable(tableName).InSchema(schemaName).OnColumn(columnName))
             : null;
     }
 
@@ -180,7 +180,7 @@ public static class IdempotentExtensions
         string schemaName = "dbo")
     {
         return self.Schema.Schema(schemaName).Table(tableName).Index(indexName).Exists()
-            ? configureDelete(self.Delete.Index(indexName).OnTable(tableName).OnColumn(columnName))
+            ? configureDelete(self.Delete.Index(indexName).OnTable(tableName).InSchema(schemaName).OnColumn(columnName))
             : null;
     }
 
@@ -215,11 +215,11 @@ public static class IdempotentExtensions
         this Migration self,
         string tableName,
         string keyName,
-        Func<IDeleteConstraintOnTableSyntax, IFluentSyntax> configureDelete,
+        Func<IDeleteConstraintInSchemaOptionsSyntax, IFluentSyntax> configureDelete,
         string schemaName = "dbo")
     {
         return self.Schema.Schema(schemaName).Table(tableName).Constraint(keyName).Exists()
-            ? configureDelete(self.Delete.UniqueConstraint(keyName))
+            ? configureDelete(self.Delete.UniqueConstraint(keyName).FromTable(tableName).InSchema(schemaName))
             : null;
     }
 
