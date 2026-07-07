@@ -5,7 +5,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <PackageId>TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer</PackageId>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Authors>TropinAlexey</Authors>
     <Description>SQL Server-specific idempotent extension methods for FluentMigrator: DropDefaultConstraintIfExists and other T-SQL helpers.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

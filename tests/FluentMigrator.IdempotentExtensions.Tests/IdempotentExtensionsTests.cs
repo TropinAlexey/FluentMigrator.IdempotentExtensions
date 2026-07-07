@@ -147,6 +147,17 @@ public sealed class IdempotentExtensionsTests : IDisposable
         Assert.Null(ex);
     }
 
+    [Fact]
+    public void CreateTableIfNotExists_WithoutSchemaName_AutoDetectsSqliteEmptySchema_IsIdempotent()
+    {
+        // No schemaName passed here — must auto-resolve to "" on SQLite (see ResolveDefaultSchema).
+        // A wrong non-empty default would make Schema.Schema(x).Table(...).Exists() always report
+        // false against SQLite, so the second run would throw "table already exists".
+        Run(new CreateTableAutoSchemaMigration());
+        var ex = Record.Exception(() => Run(new CreateTableAutoSchemaMigration()));
+        Assert.Null(ex);
+    }
+
     public void Dispose()
     {
         if (File.Exists(_dbPath))
@@ -169,6 +180,19 @@ internal sealed class CreateTableMigration : Migration
     }
 
     public override void Down() => Delete.Table("test_users");
+}
+
+[Migration(11)]
+internal sealed class CreateTableAutoSchemaMigration : Migration
+{
+    public override void Up()
+    {
+        this.CreateTableIfNotExists("test_users_auto", t => t
+            .WithIdColumn()
+            .WithColumn("name").AsString(200).NotNullable());
+    }
+
+    public override void Down() => Delete.Table("test_users_auto");
 }
 
 [Migration(2)]

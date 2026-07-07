@@ -126,7 +126,7 @@ IFluentSyntax? CreateTableIfNotExists(
     this Migration self,
     string tableName,
     Func<ICreateTableWithColumnOrSchemaOrDescriptionSyntax, IFluentSyntax> constructTable,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Creates a table only if it does not already exist. Returns `null` if already exists.
@@ -139,7 +139,7 @@ Creates a table only if it does not already exist. Returns `null` if already exi
 void DropTableIfExists(
     this Migration self,
     string tableName,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Drops a table only if it exists. No-op otherwise.
@@ -154,7 +154,7 @@ IFluentSyntax? CreateColumnIfNotExists(
     string tableName,
     string colName,
     Func<IAlterTableColumnAsTypeSyntax, IFluentSyntax> constructCol,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Adds a column to an existing table only if that column does not exist. Returns `null` if the table or column is already present.
@@ -168,7 +168,7 @@ void DeleteColumnIfExists(
     this Migration self,
     string tableName,
     string colName,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Drops a column only if it exists. No-op otherwise.
@@ -183,7 +183,7 @@ void RenameColumnIfExists(
     string tableName,
     string oldName,
     string newName,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Renames a column only if the source column exists. No-op if `oldName` is not found.
@@ -196,7 +196,7 @@ Renames a column only if the source column exists. No-op if `oldName` is not fou
 void CreateLogTableIfNotExists(
     this Migration self,
     string tableName,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Creates `{tableName}_log` with standard audit columns:
@@ -216,7 +216,7 @@ IFluentSyntax? CreateIndexIfNotExists(
     string tableName,
     string columnName,
     Func<ICreateIndexColumnOptionsSyntax, IFluentSyntax> configureIndex,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Creates an index named `index_{columnName}` if it does not already exist.
@@ -231,7 +231,7 @@ IFluentSyntax? CreateCompositeIndexIfNotExists(
     string tableName,
     string[] columns,
     Func<ICreateIndexOnColumnSyntax, IFluentSyntax> configureIndex,
-    string schemaName = "dbo",
+    string? schemaName = null,
     string? indexName = null)
 ```
 
@@ -253,7 +253,7 @@ IFluentSyntax? DropIndexIfExists(
     string columnName,
     string indexName,
     Func<IDeleteIndexOptionsSyntax, IFluentSyntax> configureDelete,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Drops a named index only if it exists.
@@ -268,7 +268,7 @@ void CreateUniqueConstraintIfNotExists(
     string tableName,
     string constraintName,
     string[] columns,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Creates a named UNIQUE constraint if it does not already exist.
@@ -286,7 +286,7 @@ void DropConstraintIfExists(
     this Migration self,
     string tableName,
     string constraintName,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Drops a named UNIQUE or CHECK constraint if it exists. Works on all databases supported by FluentMigrator.
@@ -302,7 +302,7 @@ IFluentSyntax? DropPrimaryKeyIfExists(
     string tableName,
     string keyName,
     Func<IDeleteConstraintInSchemaOptionsSyntax, IFluentSyntax> configureDelete,
-    string schemaName = "dbo")
+    string? schemaName = null)
 ```
 
 Drops a primary key or unique constraint by name only if it exists.
@@ -379,9 +379,14 @@ Alter.Table("users").AlterColumn("status").AsInt32().NotNullable();
 | **SqlServer package** | | | | |
 | `DropDefaultConstraintIfExists` | ✅ | ❌ | ❌ | ❌ |
 
-> **Note on `schemaName`:** The default value is `"dbo"` (SQL Server convention).
-> For PostgreSQL use `"public"`, for MySQL omit the schema or pass the database name.
-> For SQLite pass `""` (empty string) — SQLite has no schema support.
+> **Note on `schemaName`:** When omitted (or `null`), it's auto-detected from the current
+> database provider: `"dbo"` for SQL Server, `"public"` for PostgreSQL, `""` for MySQL and
+> SQLite (SQLite has no schema support; MySQL treats schema as the connection's database).
+> Pass an explicit value to override — e.g. for multi-tenant setups where each migration run
+> targets a different schema.
+>
+> The one exception is `DropDefaultConstraintIfExists` (SqlServer package), which is SQL
+> Server-only and keeps a plain `"dbo"` default.
 
 ## License
 
