@@ -5,9 +5,9 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <PackageId>TropinAlexey.FluentMigrator.IdempotentExtensions</PackageId>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <Authors>TropinAlexey</Authors>
-    <Description>Idempotent extension methods for FluentMigrator migrations. CreateTableIfNotExists, CreateColumnIfNotExists, CreateIndexIfNotExists, and more — safe to run multiple times on any database.</Description>
+    <Description>Idempotent extension methods for FluentMigrator migrations. CreateTableIfNotExists, CreateForeignKeyIfNotExists, CreateSequenceIfNotExists, InsertDataIfNotExists, and more — safe to run multiple times on any database.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions</PackageProjectUrl>
     <RepositoryUrl>https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions</RepositoryUrl>
@@ -24,7 +24,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="FluentMigrator" Version="5.*" />
+    <PackageReference Include="FluentMigrator" Version="6.*" />
   </ItemGroup>
 
 </Project>

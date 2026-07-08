@@ -6,6 +6,19 @@ Idempotent extension methods for [FluentMigrator](https://fluentmigrator.github.
 [![NuGet (SqlServer)](https://img.shields.io/nuget/v/TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer.svg)](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer/)
 [![CI](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/actions/workflows/ci.yml/badge.svg)](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/actions/workflows/ci.yml)
 
+## What's New
+
+### v1.3.0
+
+- `CreateForeignKeyIfNotExists` / `DropForeignKeyIfExists` — idempotent foreign keys (SQL Server, PostgreSQL, MySQL; not supported on SQLite).
+- `CreatePrimaryKeyIfNotExists` — add a primary key to an already-existing table (not supported on SQLite).
+- `AlterColumnIfExists` — alter a column's type/constraints, guarded by a column-existence check (not supported on SQLite).
+- `RenameTableIfExists` — rename a table only if the source table exists.
+- `CreateSequenceIfNotExists` / `DropSequenceIfExists` — idempotent sequences (SQL Server, PostgreSQL; not supported on MySQL/SQLite). Raises the minimum `FluentMigrator` dependency to `6.*`.
+- `DropColumnDefaultIfExists` — drops a column's default value on **any** provider (SQL Server, PostgreSQL, MySQL) from the core package, no SQL Server-only package required. The existing SqlServer-package `DropDefaultConstraintIfExists` is unchanged and still works.
+- `InsertDataIfNotExists` — idempotent seed/reference-data inserts via a portable `INSERT ... WHERE NOT EXISTS` statement that works unmodified across all four providers. Correctly handles `null` key values (`IS NULL`, not `= NULL`), `Guid`, and `enum` values.
+- All new methods were kept provider-agnostic in the core package rather than split into per-database packages, so no new `.Postgres`/`.MySql`/`.SQLite` packages were introduced.
+
 ## Packages
 
 | Package | Description |
@@ -81,7 +94,11 @@ Add a new column, backfill it in application code, then drop the old one in a la
 
 #### Adding indexes and constraints after the fact
 
-`CreateIndexIfNotExists`, `CreateCompositeIndexIfNotExists`, and `CreateUniqueConstraintIfNotExists` let you introduce a performance index or a new uniqueness rule without checking whether a previous migration, hotfix, or DBA already created it.
+`CreateIndexIfNotExists`, `CreateCompositeIndexIfNotExists`, `CreateUniqueConstraintIfNotExists`, `CreatePrimaryKeyIfNotExists`, and `CreateForeignKeyIfNotExists` let you introduce a performance index, uniqueness rule, primary key, or relationship without checking whether a previous migration, hotfix, or DBA already created it.
+
+#### Idempotent seed/reference data
+
+`InsertDataIfNotExists` inserts a lookup-table row (statuses, roles, feature flags, …) only if a row matching its key columns isn't already there — safe to re-run alongside the rest of the migration instead of needing a separate one-time seeding script.
 
 #### Multi-tenant / multi-schema databases
 
@@ -161,6 +178,40 @@ Adds a column to an existing table only if that column does not exist. Returns `
 
 ---
 
+#### `AlterColumnIfExists()`
+
+```csharp
+IFluentSyntax? AlterColumnIfExists(
+    this Migration self,
+    string tableName,
+    string colName,
+    Func<IAlterTableColumnAsTypeSyntax, IFluentSyntax> constructCol,
+    string? schemaName = null)
+```
+
+Alters an existing column only if it's present. Returns `null` if the table or column does not exist. Only guards existence — it does not diff the current column definition against the target one, so `constructCol` always runs when the column is present. **Not supported on SQLite** (no native `ALTER COLUMN`).
+
+---
+
+#### `DropColumnDefaultIfExists()`
+
+```csharp
+void DropColumnDefaultIfExists(
+    this Migration self,
+    string tableName,
+    string columnName,
+    string? schemaName = null)
+```
+
+Drops the default value on a column, on **any** provider. On SQL Server, DEFAULT constraints are auto-named objects, so this locates the actual constraint via `sys.default_constraints` and drops it with a single conditional T-SQL block. On PostgreSQL and MySQL, `ALTER COLUMN ... DROP DEFAULT` is itself a no-op when no default is set, so it runs directly. Not supported on SQLite.
+
+```csharp
+this.DropColumnDefaultIfExists("users", "status");
+Alter.Table("users").AlterColumn("status").AsInt32().NotNullable();
+```
+
+---
+
 #### `DeleteColumnIfExists()`
 
 ```csharp
@@ -187,6 +238,20 @@ void RenameColumnIfExists(
 ```
 
 Renames a column only if the source column exists. No-op if `oldName` is not found.
+
+---
+
+#### `RenameTableIfExists()`
+
+```csharp
+void RenameTableIfExists(
+    this Migration self,
+    string oldName,
+    string newName,
+    string? schemaName = null)
+```
+
+Renames a table only if the source table exists. No-op if `oldName` is not found.
 
 ---
 
@@ -290,7 +355,7 @@ void DropConstraintIfExists(
 ```
 
 Drops a named UNIQUE or CHECK constraint if it exists. Works on all databases supported by FluentMigrator.
-For SQL Server DEFAULT constraints use `DropDefaultConstraintIfExists` from the SqlServer package.
+For default values use `DropColumnDefaultIfExists`.
 
 ---
 
@@ -306,6 +371,57 @@ IFluentSyntax? DropPrimaryKeyIfExists(
 ```
 
 Drops a primary key or unique constraint by name only if it exists.
+
+---
+
+#### `CreatePrimaryKeyIfNotExists()`
+
+```csharp
+void CreatePrimaryKeyIfNotExists(
+    this Migration self,
+    string tableName,
+    string keyName,
+    string[] columns,
+    string? schemaName = null)
+```
+
+Creates a named PRIMARY KEY constraint if it does not already exist — useful for adding a primary key to a table that was created without one (e.g. legacy tables). **Not supported on SQLite.**
+
+---
+
+#### `CreateForeignKeyIfNotExists()`
+
+```csharp
+void CreateForeignKeyIfNotExists(
+    this Migration self,
+    string tableName,
+    string foreignKeyName,
+    string[] foreignColumns,
+    string primaryTableName,
+    string[] primaryColumns,
+    string? schemaName = null,
+    string? primarySchemaName = null)
+```
+
+Creates a foreign key from `tableName` to `primaryTableName` if it does not already exist. `primarySchemaName` defaults to `schemaName` when omitted. **Not supported on SQLite.**
+
+```csharp
+this.CreateForeignKeyIfNotExists("orders", "fk_orders_users", new[] { "user_id" }, "users", new[] { "id" });
+```
+
+---
+
+#### `DropForeignKeyIfExists()`
+
+```csharp
+void DropForeignKeyIfExists(
+    this Migration self,
+    string tableName,
+    string foreignKeyName,
+    string? schemaName = null)
+```
+
+Drops a named foreign key if it exists. **Not supported on SQLite.**
 
 ---
 
@@ -329,6 +445,58 @@ Drops a schema if it exists. Not supported on SQLite.
 
 ---
 
+#### `CreateSequenceIfNotExists()`
+
+```csharp
+void CreateSequenceIfNotExists(
+    this Migration self,
+    string sequenceName,
+    Action<ICreateSequenceSyntax>? configureSequence = null,
+    string? schemaName = null)
+```
+
+Creates a sequence if it does not already exist. `configureSequence` lets you set increment, min/max, start value, caching and cycling. **Not supported on MySQL/MariaDB or SQLite.**
+
+```csharp
+this.CreateSequenceIfNotExists("order_number_seq", s => s.StartWith(1000).IncrementBy(1));
+```
+
+---
+
+#### `DropSequenceIfExists()`
+
+```csharp
+void DropSequenceIfExists(
+    this Migration self,
+    string sequenceName,
+    string? schemaName = null)
+```
+
+Drops a sequence if it exists. **Not supported on MySQL/MariaDB or SQLite.**
+
+---
+
+#### `InsertDataIfNotExists()`
+
+```csharp
+void InsertDataIfNotExists(
+    this Migration self,
+    string tableName,
+    IReadOnlyDictionary<string, object?> keyValues,
+    IReadOnlyDictionary<string, object?>? additionalValues = null,
+    string? schemaName = null)
+```
+
+Inserts a row only if no row matching `keyValues` already exists — for idempotently seeding small reference/lookup tables. Uses a single portable `INSERT ... SELECT ... WHERE NOT EXISTS (...)` statement that runs unmodified on SQL Server, PostgreSQL, MySQL and SQLite. `keyValues` must have at least one entry. Values are formatted as SQL literals: strings are quote-escaped, `null` key values use `IS NULL` (not `= NULL`, which never matches), booleans become `1`/`0`, `Guid` is quoted, and enums use their underlying numeric value. Table/column identifiers are **not** quoted, so avoid reserved words.
+
+```csharp
+this.InsertDataIfNotExists("statuses",
+    keyValues: new Dictionary<string, object?> { ["code"] = "ACTIVE" },
+    additionalValues: new Dictionary<string, object?> { ["label"] = "Active" });
+```
+
+---
+
 ### SQL Server package (`TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer`)
 
 ```csharp
@@ -347,7 +515,7 @@ void DropDefaultConstraintIfExists(
 
 Drops the `DEFAULT` constraint on `columnName` if one exists. Uses `sys.default_constraints` to locate the constraint by column — safe regardless of the constraint's auto-generated name.
 
-**SQL Server / Azure SQL only.**
+**SQL Server / Azure SQL only.** Kept for backward compatibility — new code targeting multiple providers should use `DropColumnDefaultIfExists` from the core package instead, which covers SQL Server, PostgreSQL and MySQL with one call.
 
 ```csharp
 // Remove the DEFAULT before altering the column type
@@ -374,8 +542,17 @@ Alter.Table("users").AlterColumn("status").AsInt32().NotNullable();
 | `CreateUniqueConstraintIfNotExists` | ✅ | ✅ | ✅ | ✅ |
 | `DropConstraintIfExists` | ✅ | ✅ | ✅ | ✅ |
 | `DropPrimaryKeyIfExists` | ✅ | ✅ | ✅ | ✅ |
+| `CreatePrimaryKeyIfNotExists` | ✅ | ✅ | ✅ | ❌ |
+| `CreateForeignKeyIfNotExists` | ✅ | ✅ | ✅ | ❌ |
+| `DropForeignKeyIfExists` | ✅ | ✅ | ✅ | ❌ |
+| `AlterColumnIfExists` | ✅ | ✅ | ✅ | ❌ |
+| `DropColumnDefaultIfExists` | ✅ | ✅ | ✅ | ❌ |
+| `RenameTableIfExists` | ✅ | ✅ | ✅ | ✅ |
 | `CreateSchemaIfNotExists` | ✅ | ✅ | ✅ | ❌ |
 | `DropSchemaIfExists` | ✅ | ✅ | ✅ | ❌ |
+| `CreateSequenceIfNotExists` | ✅ | ✅ | ❌ | ❌ |
+| `DropSequenceIfExists` | ✅ | ✅ | ❌ | ❌ |
+| `InsertDataIfNotExists` | ✅ | ✅ | ✅ | ✅ |
 | **SqlServer package** | | | | |
 | `DropDefaultConstraintIfExists` | ✅ | ❌ | ❌ | ❌ |
 
@@ -387,6 +564,10 @@ Alter.Table("users").AlterColumn("status").AsInt32().NotNullable();
 >
 > The one exception is `DropDefaultConstraintIfExists` (SqlServer package), which is SQL
 > Server-only and keeps a plain `"dbo"` default.
+
+> **Note on FluentMigrator version:** the core package requires `FluentMigrator 6.*` or later
+> (raised from `5.*` in v1.3.0) to access the schema-existence check used by
+> `CreateSequenceIfNotExists`/`DropSequenceIfExists`.
 
 ## License
 

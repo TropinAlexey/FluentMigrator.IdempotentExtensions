@@ -17,6 +17,9 @@ public static class SqlServerExtensions
     /// <param name="schemaName">Database schema. Defaults to <c>dbo</c>.</param>
     /// <remarks>
     /// SQL Server only. Uses a CURSOR + <c>sp_executesql</c> to handle any constraint name.
+    /// Kept for backward compatibility — new code targeting multiple providers should use
+    /// <c>DropColumnDefaultIfExists</c> from the core package instead, which covers SQL Server,
+    /// PostgreSQL and MySQL with one call.
     /// </remarks>
     public static void DropDefaultConstraintIfExists(
         this Migration self,

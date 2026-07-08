@@ -3,6 +3,7 @@ using System.IO;
 using FluentMigrator;
 using FluentMigrator.IdempotentExtensions;
 using FluentMigrator.Runner;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace FluentMigrator.IdempotentExtensions.Tests;
@@ -38,6 +39,15 @@ public sealed class IdempotentExtensionsTests : IDisposable
         using var scope = _services.CreateScope();
         var runner = scope.ServiceProvider.GetRequiredService<IMigrationRunner>();
         runner.Up(migration);
+    }
+
+    private long CountRows(string tableName)
+    {
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM {tableName}";
+        return (long)command.ExecuteScalar()!;
     }
 
     // ---- tests ----
@@ -156,6 +166,53 @@ public sealed class IdempotentExtensionsTests : IDisposable
         Run(new CreateTableAutoSchemaMigration());
         var ex = Record.Exception(() => Run(new CreateTableAutoSchemaMigration()));
         Assert.Null(ex);
+    }
+
+    [Fact]
+    public void AlterColumnIfExists_ReturnsNullWhenColumnMissing()
+    {
+        // SQLite has no native ALTER COLUMN, so the only branch testable here is the missing-column guard.
+        Run(new CreateTableMigration());
+        var ex = Record.Exception(() => Run(new AlterMissingColumnMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void RenameTableIfExists_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new RenameTableMigration());
+        var ex = Record.Exception(() => Run(new RenameTableMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void RenameTableIfExists_DoesNotThrowWhenTableMissing()
+    {
+        var ex = Record.Exception(() => Run(new RenameNonExistentTableMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void InsertDataIfNotExists_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new InsertSeedDataMigration());
+        Run(new InsertSeedDataMigration());
+
+        Assert.Equal(1, CountRows("test_users"));
+    }
+
+    [Fact]
+    public void InsertDataIfNotExists_WithNullKeyValue_IsIdempotent()
+    {
+        // Regression test: the existence check must use "IS NULL" for null key values, not "= NULL"
+        // (which never matches in SQL), otherwise every run would insert another duplicate row.
+        Run(new CreateTableMigration());
+        Run(new InsertSeedDataWithNullKeyMigration());
+        Run(new InsertSeedDataWithNullKeyMigration());
+
+        Assert.Equal(1, CountRows("test_users"));
     }
 
     public void Dispose()
@@ -295,6 +352,68 @@ internal sealed class AddUniqueConstraintMigration : Migration
     public override void Up()
     {
         this.CreateUniqueConstraintIfNotExists("test_users", "uc_users_email", new[] { "email" }, schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(12)]
+internal sealed class AlterMissingColumnMigration : Migration
+{
+    public override void Up()
+    {
+        this.AlterColumnIfExists("test_users", "nonexistent_col",
+            c => c.AsInt32().Nullable(),
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(13)]
+internal sealed class RenameTableMigration : Migration
+{
+    public override void Up()
+    {
+        this.RenameTableIfExists("test_users", "test_users_renamed", schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(14)]
+internal sealed class RenameNonExistentTableMigration : Migration
+{
+    public override void Up()
+    {
+        this.RenameTableIfExists("nonexistent_table", "whatever", schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(17)]
+internal sealed class InsertSeedDataMigration : Migration
+{
+    public override void Up()
+    {
+        this.InsertDataIfNotExists("test_users",
+            new Dictionary<string, object?> { ["name"] = "seed-user" },
+            new Dictionary<string, object?> { ["email"] = "seed@example.com" },
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(18)]
+internal sealed class InsertSeedDataWithNullKeyMigration : Migration
+{
+    public override void Up()
+    {
+        this.InsertDataIfNotExists("test_users",
+            new Dictionary<string, object?> { ["name"] = "seed-user-nullkey", ["email"] = null },
+            schemaName: "");
     }
 
     public override void Down() { }
