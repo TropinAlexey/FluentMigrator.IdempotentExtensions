@@ -362,6 +362,12 @@ END");
     /// Useful when the primary key needs to be added after the table already exists (e.g. legacy tables).
     /// Not supported on SQLite (FluentMigrator's SQLite generator does not implement this DDL).
     /// </summary>
+    /// <remarks>
+    /// On MySQL, primary key constraints are always physically named <c>PRIMARY</c> regardless of the name
+    /// requested at creation time, so the existence check looks for that fixed name instead of
+    /// <paramref name="keyName"/> — checking by <paramref name="keyName"/> would never match an existing
+    /// key and the second run would fail with "Multiple primary key defined".
+    /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Target table name.</param>
     /// <param name="keyName">Name of the primary key constraint to create.</param>
@@ -378,7 +384,11 @@ END");
     {
         schemaName ??= self.ResolveDefaultSchema();
 
-        if (!self.Schema.Schema(schemaName).Table(tableName).Constraint(keyName).Exists())
+        var existingKeyName = self.GetDatabaseType().IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0
+            ? "PRIMARY"
+            : keyName;
+
+        if (!self.Schema.Schema(schemaName).Table(tableName).Constraint(existingKeyName).Exists())
             self.Create.PrimaryKey(keyName)
                 .OnTable(tableName)
                 .WithSchema(schemaName)
@@ -594,6 +604,380 @@ END");
     }
 
     /// <summary>
+    /// Adds a named CHECK constraint on <paramref name="tableName"/> if it does not already exist.
+    /// Not supported on SQLite (its <c>ALTER TABLE</c> cannot add constraints to an existing table).
+    /// </summary>
+    /// <remarks>
+    /// To drop a check constraint, reuse <see cref="DropConstraintIfExists"/> — it issues a generic
+    /// <c>DROP CONSTRAINT</c>, which SQL Server, PostgreSQL, and MySQL (8.0.19+) all accept for CHECK constraints.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="constraintName">Name of the CHECK constraint to create.</param>
+    /// <param name="checkSql">The boolean SQL expression to check, without the surrounding parentheses
+    /// (e.g. <c>"age &gt;= 0"</c>).</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void CreateCheckConstraintIfNotExists(
+        this Migration self,
+        string tableName,
+        string constraintName,
+        string checkSql,
+        string? schemaName = null)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+
+        if (self.Schema.Schema(schemaName).Table(tableName).Constraint(constraintName).Exists())
+            return;
+
+        self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} ADD CONSTRAINT {constraintName} CHECK ({checkSql});");
+    }
+
+    /// <summary>
+    /// Sets a default value on <paramref name="columnName"/> if the column exists; a no-op if it does not.
+    /// Companion to <see cref="DropColumnDefaultIfExists"/>. Not supported on SQLite (no <c>ALTER COLUMN</c>).
+    /// </summary>
+    /// <remarks>
+    /// On PostgreSQL and MySQL, <c>ALTER COLUMN ... SET DEFAULT</c> simply overwrites any existing default, so
+    /// it is executed directly. On SQL Server, DEFAULT constraints must be explicitly named and cannot coexist
+    /// with an existing one on the same column, so the existing default is checked for first via
+    /// <c>sys.default_constraints</c>.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="columnName">Column to set the default value on.</param>
+    /// <param name="defaultValue">The default value. Formatted as a SQL literal the same way as
+    /// <see cref="InsertDataIfNotExists"/> values.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void AddColumnDefaultIfExists(
+        this Migration self,
+        string tableName,
+        string columnName,
+        object? defaultValue,
+        string? schemaName = null)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+
+        if (!self.ColumnExists(tableName, columnName, schemaName))
+            return;
+
+        var formattedValue = FormatSqlValue(defaultValue);
+
+        if (self.GetDatabaseType().IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($@"
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.default_constraints dc
+    JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+    WHERE dc.parent_object_id = OBJECT_ID(N'[{schemaName}].[{tableName}]')
+      AND c.name = N'{columnName}'
+)
+    ALTER TABLE [{schemaName}].[{tableName}] ADD CONSTRAINT [DF_{tableName}_{columnName}] DEFAULT {formattedValue} FOR [{columnName}];");
+            return;
+        }
+
+        self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} ALTER COLUMN {columnName} SET DEFAULT {formattedValue};");
+    }
+
+    /// <summary>
+    /// Creates <paramref name="viewName"/> if it does not already exist.
+    /// </summary>
+    /// <remarks>
+    /// On PostgreSQL and MySQL, uses <c>CREATE OR REPLACE VIEW</c>, so re-running with the same
+    /// <paramref name="selectSql"/> is a harmless no-op (the view is simply redefined identically).
+    /// On SQLite, uses the native <c>CREATE VIEW IF NOT EXISTS</c>. On SQL Server, which supports neither,
+    /// the existence check is done via <c>sys.views</c> and the view is created via dynamic SQL.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="viewName">Name of the view to create.</param>
+    /// <param name="selectSql">The view's <c>SELECT</c> statement, without the <c>CREATE VIEW ... AS</c> prefix.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void CreateViewIfNotExists(
+        this Migration self,
+        string viewName,
+        string selectSql,
+        string? schemaName = null)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+        var databaseType = self.GetDatabaseType();
+
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($@"
+IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{schemaName}].[{viewName}]'))
+    EXEC('CREATE VIEW [{schemaName}].[{viewName}] AS {selectSql.Replace("'", "''")}');");
+            return;
+        }
+
+        if (databaseType.IndexOf("SQLite", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"CREATE VIEW IF NOT EXISTS {viewName} AS {selectSql};");
+            return;
+        }
+
+        self.Execute.Sql($"CREATE OR REPLACE VIEW {QualifyTable(schemaName, viewName)} AS {selectSql};");
+    }
+
+    /// <summary>
+    /// Drops <paramref name="viewName"/> if it exists, via the native <c>DROP VIEW IF EXISTS</c> — supported
+    /// by SQL Server (2016+), PostgreSQL, MySQL, and SQLite alike.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="viewName">Name of the view to drop.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void DropViewIfExists(this Migration self, string viewName, string? schemaName = null)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+        self.Execute.Sql($"DROP VIEW IF EXISTS {QualifyTable(schemaName, viewName)};");
+    }
+
+    /// <summary>
+    /// Drops <paramref name="triggerName"/> if it exists, via the native <c>DROP TRIGGER IF EXISTS</c> —
+    /// supported by SQL Server (2016+), PostgreSQL, MySQL, and SQLite alike. PostgreSQL additionally requires
+    /// the owning table, via <c>ON {tableName}</c>.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="triggerName">Name of the trigger to drop.</param>
+    /// <param name="tableName">Table the trigger is defined on (only used for the PostgreSQL syntax).</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void DropTriggerIfExists(this Migration self, string triggerName, string tableName, string? schemaName = null)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+
+        if (self.GetDatabaseType().IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"DROP TRIGGER IF EXISTS {triggerName} ON {QualifyTable(schemaName, tableName)};");
+            return;
+        }
+
+        self.Execute.Sql($"DROP TRIGGER IF EXISTS {triggerName};");
+    }
+
+    /// <summary>
+    /// Creates <paramref name="triggerName"/> by first dropping any existing trigger of the same name
+    /// (via <see cref="DropTriggerIfExists"/>), then executing <paramref name="createTriggerSql"/> verbatim.
+    /// </summary>
+    /// <remarks>
+    /// Trigger bodies are inherently provider-specific (T-SQL vs PL/pgSQL vs MySQL trigger syntax) and there
+    /// is no portable <c>CREATE TRIGGER IF NOT EXISTS</c>/<c>OR REPLACE</c> across SQL Server, PostgreSQL and
+    /// MySQL — so the caller supplies the full <c>CREATE TRIGGER</c> statement for their target provider, and
+    /// this only makes re-running that statement safe by dropping the old trigger first.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="triggerName">Name of the trigger being created.</param>
+    /// <param name="tableName">Table the trigger is defined on (only used for the PostgreSQL drop syntax).</param>
+    /// <param name="createTriggerSql">The full, provider-specific <c>CREATE TRIGGER ...</c> statement.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void CreateTriggerIfNotExists(
+        this Migration self,
+        string triggerName,
+        string tableName,
+        string createTriggerSql,
+        string? schemaName = null)
+    {
+        self.DropTriggerIfExists(triggerName, tableName, schemaName);
+        self.Execute.Sql(createTriggerSql);
+    }
+
+    /// <summary>
+    /// Drops <paramref name="functionName"/> if it exists. Only supported on SQL Server and PostgreSQL —
+    /// MySQL/MariaDB and SQLite have no comparable general-purpose SQL function feature.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="functionName">Name of the function to drop.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void DropFunctionIfExists(this Migration self, string functionName, string? schemaName = null)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+        var databaseType = self.GetDatabaseType();
+
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"DROP FUNCTION IF EXISTS [{schemaName}].[{functionName}];");
+            return;
+        }
+
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"DROP FUNCTION IF EXISTS {QualifyTable(schemaName, functionName)};");
+            return;
+        }
+
+        throw new NotSupportedException("DropFunctionIfExists is only supported on SQL Server and PostgreSQL.");
+    }
+
+    /// <summary>
+    /// Creates <paramref name="functionName"/> by first dropping any existing function of the same name
+    /// (via <see cref="DropFunctionIfExists"/>), then executing <paramref name="createFunctionSql"/> verbatim.
+    /// Only supported on SQL Server and PostgreSQL. Mainly useful for PostgreSQL trigger functions, which
+    /// must exist before a trigger created via <see cref="CreateTriggerIfNotExists"/> can reference them.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="functionName">Name of the function being created.</param>
+    /// <param name="createFunctionSql">The full, provider-specific <c>CREATE FUNCTION ...</c> statement.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void CreateFunctionIfNotExists(
+        this Migration self,
+        string functionName,
+        string createFunctionSql,
+        string? schemaName = null)
+    {
+        self.DropFunctionIfExists(functionName, schemaName);
+        self.Execute.Sql(createFunctionSql);
+    }
+
+    /// <summary>
+    /// Renames the index <paramref name="oldName"/> to <paramref name="newName"/> on <paramref name="tableName"/>
+    /// if it exists. Not supported on SQLite (no rename-index DDL; the index would need to be dropped and
+    /// recreated from its original definition, which this method does not have).
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Table the index is defined on.</param>
+    /// <param name="oldName">Current index name.</param>
+    /// <param name="newName">New index name.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void RenameIndexIfExists(
+        this Migration self,
+        string tableName,
+        string oldName,
+        string newName,
+        string? schemaName = null)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+
+        if (!self.Schema.Schema(schemaName).Table(tableName).Index(oldName).Exists())
+            return;
+
+        var databaseType = self.GetDatabaseType();
+
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"EXEC sp_rename N'{schemaName}.{tableName}.{oldName}', N'{newName}', N'INDEX';");
+            return;
+        }
+
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"ALTER INDEX {QualifyTable(schemaName, oldName)} RENAME TO {newName};");
+            return;
+        }
+
+        if (databaseType.IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} RENAME INDEX {oldName} TO {newName};");
+            return;
+        }
+
+        throw new NotSupportedException("RenameIndexIfExists is not supported on SQLite.");
+    }
+
+    /// <summary>
+    /// Renames the constraint <paramref name="oldName"/> to <paramref name="newName"/> on
+    /// <paramref name="tableName"/> if it exists. Only supported on SQL Server and PostgreSQL — MySQL/MariaDB
+    /// has no general-purpose constraint rename (only <c>RENAME INDEX</c>, see <see cref="RenameIndexIfExists"/>),
+    /// and SQLite has no rename-constraint DDL at all.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Table the constraint is defined on.</param>
+    /// <param name="oldName">Current constraint name.</param>
+    /// <param name="newName">New constraint name.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void RenameConstraintIfExists(
+        this Migration self,
+        string tableName,
+        string oldName,
+        string newName,
+        string? schemaName = null)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+
+        if (!self.Schema.Schema(schemaName).Table(tableName).Constraint(oldName).Exists())
+            return;
+
+        var databaseType = self.GetDatabaseType();
+
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            // No @objtype: UNIQUE/PRIMARY KEY constraints are backed by an index (needs 'INDEX'), while
+            // CHECK/DEFAULT/FOREIGN KEY constraints are true objects (needs 'OBJECT' or nothing) — since this
+            // method doesn't know which kind of constraint it's renaming, claiming the wrong type makes
+            // sp_rename fail with "the claimed @objtype is wrong". Omitting it lets SQL Server resolve it itself.
+            self.Execute.Sql($"EXEC sp_rename N'{schemaName}.{tableName}.{oldName}', N'{newName}';");
+            return;
+        }
+
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} RENAME CONSTRAINT {oldName} TO {newName};");
+            return;
+        }
+
+        throw new NotSupportedException("RenameConstraintIfExists is only supported on SQL Server and PostgreSQL.");
+    }
+
+    /// <summary>
+    /// Updates rows in <paramref name="tableName"/> matching <paramref name="keyValues"/> with
+    /// <paramref name="setValues"/>. Naturally idempotent — an <c>UPDATE</c> that matches zero rows (because
+    /// they were already updated, or don't exist) is a safe no-op on every provider, so no existence guard
+    /// is needed.
+    /// </summary>
+    /// <remarks>
+    /// Uses the same portable value formatting as <see cref="InsertDataIfNotExists"/> (strings quote-escaped,
+    /// <c>null</c> compared with <c>IS NULL</c>, <see cref="Guid"/> quoted, enums as their numeric value);
+    /// table and column identifiers are not quoted, so avoid reserved words.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="keyValues">Column/value pairs identifying which rows to update. Must contain at least one entry.</param>
+    /// <param name="setValues">Column/value pairs to set on the matched rows. Must contain at least one entry.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void UpdateDataIfExists(
+        this Migration self,
+        string tableName,
+        IReadOnlyDictionary<string, object?> keyValues,
+        IReadOnlyDictionary<string, object?> setValues,
+        string? schemaName = null)
+    {
+        if (keyValues.Count == 0)
+            throw new ArgumentException("At least one key column is required.", nameof(keyValues));
+        if (setValues.Count == 0)
+            throw new ArgumentException("At least one column to set is required.", nameof(setValues));
+
+        schemaName ??= self.ResolveDefaultSchema();
+
+        var setClause = string.Join(", ", setValues.Select(kv => $"{kv.Key} = {FormatSqlValue(kv.Value)}"));
+        var whereClause = string.Join(" AND ", keyValues.Select(kv => FormatSqlPredicate(kv.Key, kv.Value)));
+
+        self.Execute.Sql($"UPDATE {QualifyTable(schemaName, tableName)} SET {setClause} WHERE {whereClause};");
+    }
+
+    /// <summary>
+    /// Deletes rows from <paramref name="tableName"/> matching <paramref name="keyValues"/>. Naturally
+    /// idempotent — a <c>DELETE</c> that matches zero rows (because they were already deleted, or never
+    /// existed) is a safe no-op on every provider, so no existence guard is needed.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="keyValues">Column/value pairs identifying which rows to delete. Must contain at least one entry.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void DeleteDataIfExists(
+        this Migration self,
+        string tableName,
+        IReadOnlyDictionary<string, object?> keyValues,
+        string? schemaName = null)
+    {
+        if (keyValues.Count == 0)
+            throw new ArgumentException("At least one key column is required.", nameof(keyValues));
+
+        schemaName ??= self.ResolveDefaultSchema();
+
+        var whereClause = string.Join(" AND ", keyValues.Select(kv => FormatSqlPredicate(kv.Key, kv.Value)));
+
+        self.Execute.Sql($"DELETE FROM {QualifyTable(schemaName, tableName)} WHERE {whereClause};");
+    }
+
+    /// <summary>
     /// Inserts a row into <paramref name="tableName"/> only if no row matching <paramref name="keyValues"/>
     /// already exists. Intended for idempotently seeding small reference/lookup tables.
     /// </summary>
@@ -622,7 +1006,7 @@ END");
 
         schemaName ??= self.ResolveDefaultSchema();
 
-        var qualifiedTable = string.IsNullOrEmpty(schemaName) ? tableName : $"{schemaName}.{tableName}";
+        var qualifiedTable = QualifyTable(schemaName, tableName);
 
         var values = new Dictionary<string, object?>();
         foreach (var kv in keyValues)
@@ -645,6 +1029,9 @@ WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
     /// <c>x = NULL</c> is never true (three-valued logic), so a literal <c>=</c> would silently defeat the
     /// existence check for nullable key columns.
     /// </summary>
+    private static string QualifyTable(string schemaName, string tableName)
+        => string.IsNullOrEmpty(schemaName) ? tableName : $"{schemaName}.{tableName}";
+
     private static string FormatSqlPredicate(string column, object? value)
         => value is null ? $"{column} IS NULL" : $"{column} = {FormatSqlValue(value)}";
 

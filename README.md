@@ -2,11 +2,35 @@
 
 Idempotent extension methods for [FluentMigrator](https://fluentmigrator.github.io/) migrations — safe to run multiple times on any database.
 
-[![NuGet](https://img.shields.io/nuget/v/TropinAlexey.FluentMigrator.IdempotentExtensions.svg)](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions/)
-[![NuGet (SqlServer)](https://img.shields.io/nuget/v/TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer.svg)](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer/)
+[![NuGet](https://img.shields.io/nuget/v/TropinAlexey.FluentMigrator.IdempotentExtensions)](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions/)
+[![NuGet downloads](https://img.shields.io/nuget/dt/TropinAlexey.FluentMigrator.IdempotentExtensions)](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions/)
+[![NuGet (SqlServer)](https://img.shields.io/nuget/v/TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer?label=nuget%20%28SqlServer%29)](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer/)
 [![CI](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/actions/workflows/ci.yml/badge.svg)](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/TropinAlexey/FluentMigrator.IdempotentExtensions)](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/blob/main/LICENSE)
+[![GitHub tag](https://img.shields.io/github/v/tag/TropinAlexey/FluentMigrator.IdempotentExtensions)](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/tags)
+
+## Why
+
+Regular FluentMigrator migrations assume every database starts from the same known state and are applied exactly once, in order. In practice, databases drift: manual hotfixes, partially-applied migrations, or instances that evolved independently all end up with different schemas even though they're supposed to be the same. Idempotent extensions let you write a migration that checks what already exists and only applies what's missing — so you can run it against any of those divergent databases and safely converge them all to the same target schema, instead of having to hand-reconcile each one first.
 
 ## What's New
+
+### v1.4.0
+
+- `CreateCheckConstraintIfNotExists` — adds a named CHECK constraint if it doesn't already exist (not supported on SQLite). Drop it with the existing `DropConstraintIfExists`.
+- `AddColumnDefaultIfExists` — sets a column's default value if the column exists (a no-op otherwise); companion to `DropColumnDefaultIfExists` (not supported on SQLite).
+- `CreateViewIfNotExists` / `DropViewIfExists` — idempotent views across all four providers (`CREATE OR REPLACE VIEW` on PostgreSQL/MySQL, native `CREATE VIEW IF NOT EXISTS` on SQLite, an existence-guarded dynamic `CREATE VIEW` on SQL Server).
+- `CreateTriggerIfNotExists` / `DropTriggerIfExists` — idempotent triggers across all four providers. Trigger bodies aren't portable SQL, so you supply the full provider-specific `CREATE TRIGGER` statement; these just make re-running it safe (`DropTriggerIfExists` first, then create).
+- `CreateFunctionIfNotExists` / `DropFunctionIfExists` — idempotent SQL functions (SQL Server, PostgreSQL only; no general-purpose function feature on MySQL/SQLite). Same drop-then-create pattern as triggers. Mainly useful for PostgreSQL trigger functions, which must exist before a trigger can reference them.
+- `RenameIndexIfExists` — renames an index if it exists (SQL Server, PostgreSQL, MySQL; not supported on SQLite, which has no rename-index DDL).
+- `RenameConstraintIfExists` — renames a constraint if it exists (SQL Server, PostgreSQL only; MySQL only supports renaming indexes, not general constraints, and SQLite has neither).
+- `UpdateDataIfExists` / `DeleteDataIfExists` — portable `UPDATE`/`DELETE` helpers matching rows by key columns, same value-formatting as `InsertDataIfNotExists`. Naturally idempotent on all four providers (an `UPDATE`/`DELETE` matching zero rows is always a safe no-op), so no existence guard is needed.
+- All new methods stay in the core provider-agnostic package — no new `.Postgres`/`.MySql`/`.SQLite` packages.
+
+### v1.3.1
+
+- Fixed `CreatePrimaryKeyIfNotExists` on MySQL: the idempotency check looked for a constraint named after `keyName`, but MySQL always physically names primary key constraints `PRIMARY` — so the check never matched an existing key, and a second run failed with "Multiple primary key defined". Found by the new Testcontainers-based integration suite (see below).
+- Added a real-database integration test suite (`tests/FluentMigrator.IdempotentExtensions.Tests.Integration`) that runs the full idempotency test matrix against actual SQL Server, PostgreSQL, and MySQL containers via [Testcontainers](https://testcontainers.com/), in addition to the existing SQLite tests. Runs in a separate `integration-tests` CI job so it doesn't slow down the main build.
 
 ### v1.3.0
 

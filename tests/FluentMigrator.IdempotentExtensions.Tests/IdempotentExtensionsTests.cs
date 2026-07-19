@@ -215,6 +215,78 @@ public sealed class IdempotentExtensionsTests : IDisposable
         Assert.Equal(1, CountRows("test_users"));
     }
 
+    [Fact]
+    public void UpdateDataIfExists_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new InsertSeedDataMigration());
+        Run(new UpdateSeedDataMigration());
+        var ex = Record.Exception(() => Run(new UpdateSeedDataMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void DeleteDataIfExists_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new InsertSeedDataMigration());
+        Run(new DeleteSeedDataMigration());
+        var ex = Record.Exception(() => Run(new DeleteSeedDataMigration()));
+        Assert.Null(ex);
+
+        Assert.Equal(0, CountRows("test_users"));
+    }
+
+    [Fact]
+    public void RenameIndexIfExists_ThrowsNotSupportedOnSqlite()
+    {
+        Run(new CreateTableMigration());
+        Run(new AddColumnMigration());
+        Run(new AddIndexMigration());
+
+        Assert.Throws<NotSupportedException>(() => Run(new RenameIndexMigration()));
+    }
+
+    [Fact]
+    public void CreateViewIfNotExists_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new CreateViewMigration());
+        var ex = Record.Exception(() => Run(new CreateViewMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void DropViewIfExists_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new CreateViewMigration());
+        Run(new DropViewMigration());
+        var ex = Record.Exception(() => Run(new DropViewMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void CreateTriggerIfNotExists_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        var sql = "CREATE TRIGGER trg_test_users AFTER INSERT ON test_users BEGIN SELECT 1; END";
+        Run(new CreateTriggerMigration("trg_test_users", "test_users", sql));
+        var ex = Record.Exception(() => Run(new CreateTriggerMigration("trg_test_users", "test_users", sql)));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void DropTriggerIfExists_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        var sql = "CREATE TRIGGER trg_test_users AFTER INSERT ON test_users BEGIN SELECT 1; END";
+        Run(new CreateTriggerMigration("trg_test_users", "test_users", sql));
+        Run(new DropTriggerMigration("trg_test_users", "test_users"));
+        var ex = Record.Exception(() => Run(new DropTriggerMigration("trg_test_users", "test_users")));
+        Assert.Null(ex);
+    }
+
     public void Dispose()
     {
         if (File.Exists(_dbPath))
@@ -416,5 +488,83 @@ internal sealed class InsertSeedDataWithNullKeyMigration : Migration
             schemaName: "");
     }
 
+    public override void Down() { }
+}
+
+[Migration(19)]
+internal sealed class CreateViewMigration : Migration
+{
+    public override void Up() => this.CreateViewIfNotExists("test_users_view", "SELECT id, name FROM test_users", schemaName: "");
+    public override void Down() { }
+}
+
+[Migration(20)]
+internal sealed class DropViewMigration : Migration
+{
+    public override void Up() => this.DropViewIfExists("test_users_view", schemaName: "");
+    public override void Down() { }
+}
+
+// Trigger bodies aren't portable across providers, so this migration takes the CREATE TRIGGER
+// statement as a constructor parameter instead of hardcoding it — same pattern as the
+// Testcontainers integration suite. Bypasses ScanIn's attribute-based discovery, which is fine:
+// these tests only ever call Up(instance) directly, never MigrateUp/MigrateToLatest.
+internal sealed class CreateTriggerMigration : Migration
+{
+    private readonly string _triggerName;
+    private readonly string _tableName;
+    private readonly string _createTriggerSql;
+
+    public CreateTriggerMigration(string triggerName, string tableName, string createTriggerSql)
+    {
+        _triggerName = triggerName;
+        _tableName = tableName;
+        _createTriggerSql = createTriggerSql;
+    }
+
+    public override void Up() => this.CreateTriggerIfNotExists(_triggerName, _tableName, _createTriggerSql, schemaName: "");
+    public override void Down() { }
+}
+
+internal sealed class DropTriggerMigration : Migration
+{
+    private readonly string _triggerName;
+    private readonly string _tableName;
+
+    public DropTriggerMigration(string triggerName, string tableName)
+    {
+        _triggerName = triggerName;
+        _tableName = tableName;
+    }
+
+    public override void Up() => this.DropTriggerIfExists(_triggerName, _tableName, schemaName: "");
+    public override void Down() { }
+}
+
+[Migration(21)]
+internal sealed class UpdateSeedDataMigration : Migration
+{
+    public override void Up()
+    {
+        this.UpdateDataIfExists("test_users",
+            new Dictionary<string, object?> { ["name"] = "seed-user" },
+            new Dictionary<string, object?> { ["email"] = "updated@example.com" },
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(22)]
+internal sealed class DeleteSeedDataMigration : Migration
+{
+    public override void Up() => this.DeleteDataIfExists("test_users", new Dictionary<string, object?> { ["name"] = "seed-user" }, schemaName: "");
+    public override void Down() { }
+}
+
+[Migration(23)]
+internal sealed class RenameIndexMigration : Migration
+{
+    public override void Up() => this.RenameIndexIfExists("test_users", "index_email", "idx_users_email_renamed", schemaName: "");
     public override void Down() { }
 }

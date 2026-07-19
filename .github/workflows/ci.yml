@@ -16,7 +16,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.x'
+          dotnet-version: '10.x'
 
       - name: Restore
         run: dotnet restore
@@ -25,4 +25,21 @@ jobs:
         run: dotnet build --no-restore --configuration Release
 
       - name: Test
-        run: dotnet test --no-build --configuration Release --verbosity normal
+        run: dotnet test tests/FluentMigrator.IdempotentExtensions.Tests --no-build --configuration Release --verbosity normal
+
+  integration-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Restore
+        run: dotnet restore tests/FluentMigrator.IdempotentExtensions.Tests.Integration
+
+      - name: Test against real SQL Server / PostgreSQL / MySQL (Testcontainers)
+        run: dotnet test tests/FluentMigrator.IdempotentExtensions.Tests.Integration --configuration Release --verbosity normal
