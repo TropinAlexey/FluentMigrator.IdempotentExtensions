@@ -15,6 +15,14 @@ Regular FluentMigrator migrations assume every database starts from the same kno
 
 ## What's New
 
+### v1.5.0
+
+- Added Oracle as a fifth supported provider. Most methods already worked via FluentMigrator's own fluent builder API (tables, columns, indexes, constraints, FKs, PKs, sequences, views); this release adds Oracle-specific branches only where raw SQL was needed: `AddColumnDefaultIfExists`/`DropColumnDefaultIfExists` (`ALTER TABLE ... MODIFY ... DEFAULT`), `DropTriggerIfExists`/`DropFunctionIfExists` (PL/SQL exception-swallow, since Oracle has no `DROP ... IF EXISTS`), `RenameIndexIfExists`/`RenameConstraintIfExists` (native `ALTER INDEX`/`ALTER TABLE ... RENAME CONSTRAINT`), and `InsertDataIfNotExists` (`FROM DUAL`, since Oracle has no FROM-less `SELECT`).
+- `ResolveDefaultSchema` treats Oracle like MySQL/SQLite — schema defaults to `""` (Oracle schemas are the connected user, not a separate concept).
+- Added Oracle to the Testcontainers integration suite (`gvenzl/oracle-free`), verifying the whole idempotency matrix against a real instance — confirmed the ORA-04080/ORA-04043 exception-swallow codes, `FROM DUAL`, and `ALTER INDEX`/`RENAME CONSTRAINT` all work as expected.
+- Found and documented one genuine Oracle limitation this way: `AlterColumnIfExists` throws `ORA-01451` whenever `constructCol` calls `.Nullable()` on a column that's already nullable (Oracle rejects `MODIFY col ... NULL` when nullability doesn't change) — this can fail on the very first call, not just a rerun. An inherent Oracle restriction, not a library bug; a genuine nullability flip still works.
+- Stays in the core provider-agnostic package — no new `.Oracle` package.
+
 ### v1.4.0
 
 - `CreateCheckConstraintIfNotExists` — adds a named CHECK constraint if it doesn't already exist (not supported on SQLite). Drop it with the existing `DropConstraintIfExists`.
@@ -47,7 +55,7 @@ Regular FluentMigrator migrations assume every database starts from the same kno
 
 | Package | Description |
 |---------|-------------|
-| `TropinAlexey.FluentMigrator.IdempotentExtensions` | DB-agnostic helpers (SQL Server, PostgreSQL, MySQL, SQLite) |
+| `TropinAlexey.FluentMigrator.IdempotentExtensions` | DB-agnostic helpers (SQL Server, PostgreSQL, MySQL, SQLite, Oracle) |
 | `TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer` | SQL Server / Azure SQL specific helpers |
 
 ## Installation
@@ -214,6 +222,8 @@ IFluentSyntax? AlterColumnIfExists(
 ```
 
 Alters an existing column only if it's present. Returns `null` if the table or column does not exist. Only guards existence — it does not diff the current column definition against the target one, so `constructCol` always runs when the column is present. **Not supported on SQLite** (no native `ALTER COLUMN`).
+
+**Oracle caveat:** a `constructCol` that calls `.Nullable()` on a column that's already nullable throws `ORA-01451` — Oracle rejects `MODIFY col ... NULL` when nullability doesn't change. This can fail on the very first call, not just a rerun. Only affects calls that leave nullability unchanged; a genuine nullability flip (`NotNullable()` ↔ `Nullable()`) works normally.
 
 ---
 
@@ -551,40 +561,41 @@ Alter.Table("users").AlterColumn("status").AsInt32().NotNullable();
 
 ## Database Compatibility
 
-| Method | SQL Server | PostgreSQL | MySQL | SQLite |
-|--------|:----------:|:----------:|:-----:|:------:|
-| `WithIdColumn` | ✅ | ✅ | ✅ | ✅ |
-| `CreateTableIfNotExists` | ✅ | ✅ | ✅ | ✅ |
-| `DropTableIfExists` | ✅ | ✅ | ✅ | ✅ |
-| `CreateColumnIfNotExists` | ✅ | ✅ | ✅ | ✅ |
-| `DeleteColumnIfExists` | ✅ | ✅ | ✅ | ✅ |
-| `RenameColumnIfExists` | ✅ | ✅ | ✅ | ✅ |
-| `CreateLogTableIfNotExists` | ✅ | ✅ | ✅ | ✅ |
-| `CreateIndexIfNotExists` | ✅ | ✅ | ✅ | ✅ |
-| `CreateCompositeIndexIfNotExists` | ✅ | ✅ | ✅ | ✅ |
-| `DropIndexIfExists` | ✅ | ✅ | ✅ | ✅ |
-| `CreateUniqueConstraintIfNotExists` | ✅ | ✅ | ✅ | ✅ |
-| `DropConstraintIfExists` | ✅ | ✅ | ✅ | ✅ |
-| `DropPrimaryKeyIfExists` | ✅ | ✅ | ✅ | ✅ |
-| `CreatePrimaryKeyIfNotExists` | ✅ | ✅ | ✅ | ❌ |
-| `CreateForeignKeyIfNotExists` | ✅ | ✅ | ✅ | ❌ |
-| `DropForeignKeyIfExists` | ✅ | ✅ | ✅ | ❌ |
-| `AlterColumnIfExists` | ✅ | ✅ | ✅ | ❌ |
-| `DropColumnDefaultIfExists` | ✅ | ✅ | ✅ | ❌ |
-| `RenameTableIfExists` | ✅ | ✅ | ✅ | ✅ |
-| `CreateSchemaIfNotExists` | ✅ | ✅ | ✅ | ❌ |
-| `DropSchemaIfExists` | ✅ | ✅ | ✅ | ❌ |
-| `CreateSequenceIfNotExists` | ✅ | ✅ | ❌ | ❌ |
-| `DropSequenceIfExists` | ✅ | ✅ | ❌ | ❌ |
-| `InsertDataIfNotExists` | ✅ | ✅ | ✅ | ✅ |
-| **SqlServer package** | | | | |
-| `DropDefaultConstraintIfExists` | ✅ | ❌ | ❌ | ❌ |
+| Method | SQL Server | PostgreSQL | MySQL | SQLite | Oracle |
+|--------|:----------:|:----------:|:-----:|:------:|:------:|
+| `WithIdColumn` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `CreateTableIfNotExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `DropTableIfExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `CreateColumnIfNotExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `DeleteColumnIfExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `RenameColumnIfExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `CreateLogTableIfNotExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `CreateIndexIfNotExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `CreateCompositeIndexIfNotExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `DropIndexIfExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `CreateUniqueConstraintIfNotExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `DropConstraintIfExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `DropPrimaryKeyIfExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `CreatePrimaryKeyIfNotExists` | ✅ | ✅ | ✅ | ❌ | ✅ |
+| `CreateForeignKeyIfNotExists` | ✅ | ✅ | ✅ | ❌ | ✅ |
+| `DropForeignKeyIfExists` | ✅ | ✅ | ✅ | ❌ | ✅ |
+| `AlterColumnIfExists` | ✅ | ✅ | ✅ | ❌ | ✅ |
+| `DropColumnDefaultIfExists` | ✅ | ✅ | ✅ | ❌ | ✅ |
+| `RenameTableIfExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `CreateSchemaIfNotExists` | ✅ | ✅ | ✅ | ❌ | ❌ |
+| `DropSchemaIfExists` | ✅ | ✅ | ✅ | ❌ | ❌ |
+| `CreateSequenceIfNotExists` | ✅ | ✅ | ❌ | ❌ | ✅ |
+| `DropSequenceIfExists` | ✅ | ✅ | ❌ | ❌ | ✅ |
+| `InsertDataIfNotExists` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **SqlServer package** | | | | | |
+| `DropDefaultConstraintIfExists` | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 > **Note on `schemaName`:** When omitted (or `null`), it's auto-detected from the current
-> database provider: `"dbo"` for SQL Server, `"public"` for PostgreSQL, `""` for MySQL and
-> SQLite (SQLite has no schema support; MySQL treats schema as the connection's database).
-> Pass an explicit value to override — e.g. for multi-tenant setups where each migration run
-> targets a different schema.
+> database provider: `"dbo"` for SQL Server, `"public"` for PostgreSQL, `""` for MySQL,
+> SQLite and Oracle (SQLite has no schema support; MySQL treats schema as the connection's
+> database; Oracle schemas are the connected user, not a separate concept). Pass an explicit
+> value to override — e.g. for multi-tenant setups where each migration run targets a
+> different schema.
 >
 > The one exception is `DropDefaultConstraintIfExists` (SqlServer package), which is SQL
 > Server-only and keeps a plain `"dbo"` default.

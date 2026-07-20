@@ -88,6 +88,11 @@ public static class IdempotentExtensions
     /// This only guards against a missing table/column — unlike <see cref="CreateColumnIfNotExists"/>, it does not
     /// compare the current column definition to the target one, so it applies <paramref name="constructCol"/>
     /// unconditionally whenever the column is present. Not supported on SQLite (no native ALTER COLUMN).
+    /// On Oracle specifically, a <paramref name="constructCol"/> that calls <c>.Nullable()</c> on a column
+    /// that's already nullable throws ORA-01451 (<c>MODIFY col ... NULL</c> is rejected when nullability
+    /// doesn't change) — this can fail on the very first call, not just a rerun, and is an inherent Oracle
+    /// restriction this method can't suppress. Only affects calls that leave nullability unchanged; a genuine
+    /// nullability flip (<c>NotNullable()</c> &lt;-&gt; <c>Nullable()</c>) works normally.
     /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Target table name.</param>
@@ -188,6 +193,12 @@ BEGIN
     CLOSE cur;
     DEALLOCATE cur;
 END");
+            return;
+        }
+
+        if (self.GetDatabaseType().IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} MODIFY {columnName} DEFAULT NULL;");
             return;
         }
 
@@ -676,6 +687,12 @@ IF NOT EXISTS (
             return;
         }
 
+        if (self.GetDatabaseType().IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} MODIFY {columnName} DEFAULT {formattedValue};");
+            return;
+        }
+
         self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} ALTER COLUMN {columnName} SET DEFAULT {formattedValue};");
     }
 
@@ -750,6 +767,21 @@ IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{schemaNam
             return;
         }
 
+        if (self.GetDatabaseType().IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            // Oracle has no DROP TRIGGER IF EXISTS: swallow ORA-04080 ("trigger does not exist").
+            self.Execute.Sql($@"
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TRIGGER {triggerName}';
+EXCEPTION
+    WHEN OTHERS THEN
+        IF SQLCODE != -4080 THEN
+            RAISE;
+        END IF;
+END;");
+            return;
+        }
+
         self.Execute.Sql($"DROP TRIGGER IF EXISTS {triggerName};");
     }
 
@@ -780,8 +812,8 @@ IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{schemaNam
     }
 
     /// <summary>
-    /// Drops <paramref name="functionName"/> if it exists. Only supported on SQL Server and PostgreSQL —
-    /// MySQL/MariaDB and SQLite have no comparable general-purpose SQL function feature.
+    /// Drops <paramref name="functionName"/> if it exists. Only supported on SQL Server, PostgreSQL and
+    /// Oracle — MySQL/MariaDB and SQLite have no comparable general-purpose SQL function feature.
     /// </summary>
     /// <param name="self">The migration instance.</param>
     /// <param name="functionName">Name of the function to drop.</param>
@@ -803,7 +835,22 @@ IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{schemaNam
             return;
         }
 
-        throw new NotSupportedException("DropFunctionIfExists is only supported on SQL Server and PostgreSQL.");
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            // Oracle has no DROP FUNCTION IF EXISTS: swallow ORA-04043 ("object does not exist").
+            self.Execute.Sql($@"
+BEGIN
+    EXECUTE IMMEDIATE 'DROP FUNCTION {functionName}';
+EXCEPTION
+    WHEN OTHERS THEN
+        IF SQLCODE != -4043 THEN
+            RAISE;
+        END IF;
+END;");
+            return;
+        }
+
+        throw new NotSupportedException("DropFunctionIfExists is only supported on SQL Server, PostgreSQL and Oracle.");
     }
 
     /// <summary>
@@ -869,14 +916,22 @@ IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{schemaNam
             return;
         }
 
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            // Oracle index names are unique per schema, so no table qualifier is needed — but the
+            // schema itself still must be, otherwise this targets the connected user's default schema.
+            self.Execute.Sql($"ALTER INDEX {QualifyTable(schemaName, oldName)} RENAME TO {newName};");
+            return;
+        }
+
         throw new NotSupportedException("RenameIndexIfExists is not supported on SQLite.");
     }
 
     /// <summary>
     /// Renames the constraint <paramref name="oldName"/> to <paramref name="newName"/> on
-    /// <paramref name="tableName"/> if it exists. Only supported on SQL Server and PostgreSQL — MySQL/MariaDB
-    /// has no general-purpose constraint rename (only <c>RENAME INDEX</c>, see <see cref="RenameIndexIfExists"/>),
-    /// and SQLite has no rename-constraint DDL at all.
+    /// <paramref name="tableName"/> if it exists. Only supported on SQL Server, PostgreSQL and Oracle —
+    /// MySQL/MariaDB has no general-purpose constraint rename (only <c>RENAME INDEX</c>, see
+    /// <see cref="RenameIndexIfExists"/>), and SQLite has no rename-constraint DDL at all.
     /// </summary>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Table the constraint is defined on.</param>
@@ -907,13 +962,14 @@ IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{schemaNam
             return;
         }
 
-        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} RENAME CONSTRAINT {oldName} TO {newName};");
             return;
         }
 
-        throw new NotSupportedException("RenameConstraintIfExists is only supported on SQL Server and PostgreSQL.");
+        throw new NotSupportedException("RenameConstraintIfExists is only supported on SQL Server, PostgreSQL and Oracle.");
     }
 
     /// <summary>
@@ -1019,8 +1075,13 @@ IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{schemaNam
         var selectList = string.Join(", ", columns.Select(c => FormatSqlValue(values[c])));
         var whereClause = string.Join(" AND ", keyValues.Select(kv => FormatSqlPredicate(kv.Key, kv.Value)));
 
+        // Oracle has no FROM-less SELECT — every SELECT needs a source, hence FROM DUAL.
+        var fromDual = self.GetDatabaseType().IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0
+            ? " FROM DUAL"
+            : "";
+
         self.Execute.Sql($@"INSERT INTO {qualifiedTable} ({string.Join(", ", columns)})
-SELECT {selectList}
+SELECT {selectList}{fromDual}
 WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
     }
 
@@ -1065,6 +1126,8 @@ WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
             databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0)
             return "";
         if (databaseType.IndexOf("SQLite", StringComparison.OrdinalIgnoreCase) >= 0)
+            return "";
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
             return "";
 
         return "dbo";

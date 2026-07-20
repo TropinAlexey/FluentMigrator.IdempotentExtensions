@@ -43,6 +43,15 @@ public abstract class IdempotentExtensionsIntegrationTestsBase : IAsyncLifetime
     /// <summary>MySQL/MariaDB has no general-purpose constraint rename — subclasses override to skip.</summary>
     protected virtual bool SupportsConstraintRename => true;
 
+    /// <summary>
+    /// Oracle rejects <c>MODIFY col ... NULL</c> with ORA-01451 whenever the column is already nullable —
+    /// unlike every other provider, this fails even on the very first <c>AlterColumnIfExists</c> call if
+    /// <c>constructCol</c> specifies <c>.Nullable()</c> on a column that's already nullable (test_users.email
+    /// is created nullable, so <see cref="AlterColumnMigration"/>'s <c>.Nullable()</c> always triggers this).
+    /// Subclasses override to skip the whole assertion.
+    /// </summary>
+    protected virtual bool SupportsAlterColumnKeepingNullable => true;
+
     private string _connectionString = null!;
 
     public async Task InitializeAsync()
@@ -213,6 +222,12 @@ public abstract class IdempotentExtensionsIntegrationTestsBase : IAsyncLifetime
     public void AlterColumnIfExists_AltersExistingColumn_IsIdempotent()
     {
         Run(new CreateTableMigration());
+
+        // ponytail: no-op instead of Skip, same pattern as SupportsSequences/SupportsFunctions — Oracle
+        // genuinely can't run this even once (see SupportsAlterColumnKeepingNullable).
+        if (!SupportsAlterColumnKeepingNullable)
+            return;
+
         Run(new AlterColumnMigration());
         var ex = Record.Exception(() => Run(new AlterColumnMigration()));
         Assert.Null(ex);

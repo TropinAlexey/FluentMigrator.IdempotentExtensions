@@ -41,5 +41,5 @@ jobs:
       - name: Restore
         run: dotnet restore tests/FluentMigrator.IdempotentExtensions.Tests.Integration
 
-      - name: Test against real SQL Server / PostgreSQL / MySQL (Testcontainers)
+      - name: Test against real SQL Server / PostgreSQL / MySQL / Oracle (Testcontainers)
         run: dotnet test tests/FluentMigrator.IdempotentExtensions.Tests.Integration --configuration Release --verbosity normal
