@@ -287,6 +287,65 @@ public sealed class IdempotentExtensionsTests : IDisposable
         Assert.Null(ex);
     }
 
+    [Fact]
+    public void CreateOrReplaceView_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new CreateOrReplaceViewMigration());
+        var ex = Record.Exception(() => Run(new CreateOrReplaceViewMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void CreateOrReplaceView_UpdatesDefinition()
+    {
+        Run(new CreateTableMigration());
+        Run(new CreateOrReplaceViewMigration());
+        Run(new CreateOrReplaceViewUpdatedMigration());
+        var ex = Record.Exception(() => Run(new CreateOrReplaceViewUpdatedMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void UpsertData_InsertsWhenMissing()
+    {
+        Run(new CreateTableMigration());
+        Run(new AddUniqueConstraintOnNameMigration());
+        Run(new UpsertDataMigration());
+        Assert.Equal(1, CountRows("test_users"));
+    }
+
+    [Fact]
+    public void UpsertData_UpdatesWhenExists()
+    {
+        Run(new CreateTableMigration());
+        Run(new AddUniqueConstraintOnNameMigration());
+        Run(new UpsertDataMigration());
+        Run(new UpsertDataUpdateMigration());
+        Assert.Equal(1, CountRows("test_users"));
+
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT email FROM test_users WHERE name = 'upsert-user'";
+        var email = (string)cmd.ExecuteScalar()!;
+        Assert.Equal("updated-upsert@example.com", email);
+    }
+
+    [Fact]
+    public void ExecuteSqlIfExists_ThrowsNotSupportedOnSqlite()
+    {
+        Run(new CreateTableMigration());
+        Assert.Throws<NotSupportedException>(() => Run(new ExecuteSqlIfExistsMigration()));
+    }
+
+    [Fact]
+    public void ExecuteSqlIfNotExists_ThrowsNotSupportedOnSqlite()
+    {
+        Run(new CreateTableMigration());
+        Assert.Throws<NotSupportedException>(() => Run(new ExecuteSqlIfNotExistsMigration()));
+    }
+
     public void Dispose()
     {
         if (File.Exists(_dbPath))
@@ -566,5 +625,72 @@ internal sealed class DeleteSeedDataMigration : Migration
 internal sealed class RenameIndexMigration : Migration
 {
     public override void Up() => this.RenameIndexIfExists("test_users", "index_email", "idx_users_email_renamed", schemaName: "");
+    public override void Down() { }
+}
+
+[Migration(30)]
+internal sealed class AddUniqueConstraintOnNameMigration : Migration
+{
+    public override void Up() => this.CreateUniqueConstraintIfNotExists("test_users", "uc_users_name", new[] { "name" }, schemaName: "");
+    public override void Down() { }
+}
+
+[Migration(24)]
+internal sealed class CreateOrReplaceViewMigration : Migration
+{
+    public override void Up() => this.CreateOrReplaceView("test_users_view", "SELECT id, name FROM test_users", schemaName: "");
+    public override void Down() { }
+}
+
+[Migration(25)]
+internal sealed class CreateOrReplaceViewUpdatedMigration : Migration
+{
+    public override void Up() => this.CreateOrReplaceView("test_users_view", "SELECT id, name, email FROM test_users", schemaName: "");
+    public override void Down() { }
+}
+
+[Migration(26)]
+internal sealed class UpsertDataMigration : Migration
+{
+    public override void Up()
+    {
+        this.UpsertData("test_users",
+            new Dictionary<string, object> { ["name"] = "upsert-user" },
+            new Dictionary<string, object?> { ["email"] = "upsert@example.com" },
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(27)]
+internal sealed class UpsertDataUpdateMigration : Migration
+{
+    public override void Up()
+    {
+        this.UpsertData("test_users",
+            new Dictionary<string, object> { ["name"] = "upsert-user" },
+            new Dictionary<string, object?> { ["email"] = "updated-upsert@example.com" },
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+[Migration(28)]
+internal sealed class ExecuteSqlIfExistsMigration : Migration
+{
+    public override void Up() => this.ExecuteSqlIfExists(
+        "SELECT 1 FROM test_users WHERE name = 'exec-test'",
+        "UPDATE test_users SET email = 'found@example.com' WHERE name = 'exec-test'");
+    public override void Down() { }
+}
+
+[Migration(29)]
+internal sealed class ExecuteSqlIfNotExistsMigration : Migration
+{
+    public override void Up() => this.ExecuteSqlIfNotExists(
+        "SELECT 1 FROM test_users WHERE name = 'nobody'",
+        "INSERT INTO test_users (name, email) VALUES ('inserted-by-ifnotexists', 'ne@example.com')");
     public override void Down() { }
 }

@@ -1086,10 +1086,289 @@ WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
     }
 
     /// <summary>
-    /// Formats a <c>column = value</c> predicate, using <c>IS NULL</c> instead of <c>= NULL</c> — in SQL,
-    /// <c>x = NULL</c> is never true (three-valued logic), so a literal <c>=</c> would silently defeat the
-    /// existence check for nullable key columns.
+    /// Alters <paramref name="sequenceName"/> if it already exists; no-op otherwise.
+    /// Not supported on MySQL/MariaDB or SQLite.
     /// </summary>
+    /// <remarks>
+    /// FluentMigrator has no <c>Alter.Sequence</c> API, so this builds and executes a raw
+    /// <c>ALTER SEQUENCE</c> statement from the supplied parameters. At least one parameter
+    /// must be non-null. Provider differences are handled internally — e.g. Oracle uses
+    /// <c>START WITH</c> instead of <c>RESTART WITH</c>, and <c>NOCYCLE</c>/<c>NOCACHE</c>
+    /// instead of <c>NO CYCLE</c>/<c>NO CACHE</c>.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="sequenceName">Name of the sequence to alter.</param>
+    /// <param name="incrementBy">New increment value.</param>
+    /// <param name="minValue">New minimum value.</param>
+    /// <param name="maxValue">New maximum value.</param>
+    /// <param name="restartWith">Restart the sequence at this value. Not supported on Oracle (use <paramref name="startWith"/> instead).</param>
+    /// <param name="startWith">Set the start value. On Oracle, also restarts the sequence.</param>
+    /// <param name="cache">Number of values to cache. Pass <c>0</c> to disable caching.</param>
+    /// <param name="cycle">Whether the sequence should cycle when it reaches its limit.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void AlterSequenceIfExists(
+        this Migration self,
+        string sequenceName,
+        long? incrementBy = null,
+        long? minValue = null,
+        long? maxValue = null,
+        long? restartWith = null,
+        long? startWith = null,
+        long? cache = null,
+        bool? cycle = null,
+        string? schemaName = null)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+
+        if (!self.Schema.Schema(schemaName).Sequence(sequenceName).Exists())
+            return;
+
+        var databaseType = self.GetDatabaseType();
+        var isOracle = databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0;
+
+        var clauses = new List<string>();
+        if (incrementBy.HasValue) clauses.Add($"INCREMENT BY {incrementBy.Value}");
+        if (minValue.HasValue) clauses.Add($"MINVALUE {minValue.Value}");
+        if (maxValue.HasValue) clauses.Add($"MAXVALUE {maxValue.Value}");
+        if (startWith.HasValue) clauses.Add($"START WITH {startWith.Value}");
+        if (restartWith.HasValue && !isOracle) clauses.Add($"RESTART WITH {restartWith.Value}");
+        if (cache.HasValue)
+            clauses.Add(cache.Value > 0
+                ? $"CACHE {cache.Value}"
+                : isOracle ? "NOCACHE" : "NO CACHE");
+        if (cycle.HasValue)
+            clauses.Add(cycle.Value
+                ? "CYCLE"
+                : isOracle ? "NOCYCLE" : "NO CYCLE");
+
+        if (clauses.Count == 0)
+            return;
+
+        self.Execute.Sql($"ALTER SEQUENCE {QualifyTable(schemaName, sequenceName)} {string.Join(" ", clauses)};");
+    }
+
+    /// <summary>
+    /// Drops and recreates <paramref name="viewName"/> in a single call — equivalent to
+    /// <see cref="DropViewIfExists"/> followed by <see cref="CreateViewIfNotExists"/>.
+    /// If the view does not exist, it is simply created.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="viewName">Name of the view to create or replace.</param>
+    /// <param name="selectSql">The view's <c>SELECT</c> statement, without the <c>CREATE VIEW ... AS</c> prefix.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void CreateOrReplaceView(
+        this Migration self,
+        string viewName,
+        string selectSql,
+        string? schemaName = null)
+    {
+        self.DropViewIfExists(viewName, schemaName);
+        self.CreateViewIfNotExists(viewName, selectSql, schemaName);
+    }
+
+    /// <summary>
+    /// Inserts a row if no row matching <paramref name="keyValues"/> exists; otherwise updates the matching
+    /// row with <paramref name="additionalValues"/>. Uses provider-specific MERGE/upsert syntax:
+    /// <c>MERGE</c> on SQL Server and Oracle, <c>INSERT ... ON CONFLICT ... DO UPDATE</c> on PostgreSQL,
+    /// <c>INSERT ... ON DUPLICATE KEY UPDATE</c> on MySQL, and <c>INSERT ... ON CONFLICT ... DO UPDATE</c>
+    /// on SQLite.
+    /// </summary>
+    /// <remarks>
+    /// PostgreSQL, MySQL, and SQLite require a UNIQUE constraint (or PRIMARY KEY) on the key columns for
+    /// conflict detection to work. If no such constraint exists, the statement will fail — ensure a unique
+    /// index or constraint covers the key columns before calling this method.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="keyValues">Column/value pairs that uniquely identify the row. Must have at least one entry.
+    /// Values are non-nullable — upsert conflict detection requires non-null keys on all providers.</param>
+    /// <param name="additionalValues">Column/value pairs to insert alongside keys / update on conflict. May be empty or null for key-only rows.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void UpsertData(
+        this Migration self,
+        string tableName,
+        IReadOnlyDictionary<string, object> keyValues,
+        IReadOnlyDictionary<string, object?>? additionalValues = null,
+        string? schemaName = null)
+    {
+        if (keyValues.Count == 0)
+            throw new ArgumentException("At least one key column is required.", nameof(keyValues));
+
+        schemaName ??= self.ResolveDefaultSchema();
+
+        var allValues = new Dictionary<string, object?>();
+        foreach (var kv in keyValues)
+            allValues[kv.Key] = kv.Value;
+        if (additionalValues is not null)
+            foreach (var kv in additionalValues)
+                allValues[kv.Key] = kv.Value;
+
+        var qualifiedTable = QualifyTable(schemaName, tableName);
+        var columns = allValues.Keys.ToList();
+        var columnList = string.Join(", ", columns);
+        var valueList = string.Join(", ", columns.Select(c => FormatSqlValue(allValues[c])));
+        var databaseType = self.GetDatabaseType();
+
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            var onClause = string.Join(" AND ", keyValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"));
+            var sourceColumns = string.Join(", ", columns.Select(c => $"{FormatSqlValue(allValues[c])} AS {c}"));
+            var updateSet = additionalValues is not null && additionalValues.Count > 0
+                ? string.Join(", ", additionalValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"))
+                : string.Join(", ", keyValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"));
+            var insertColumns = string.Join(", ", columns);
+            var insertValues = string.Join(", ", columns.Select(c => $"source.{c}"));
+
+            self.Execute.Sql($@"MERGE {qualifiedTable} AS target
+USING (SELECT {sourceColumns}) AS source
+ON ({onClause})
+WHEN MATCHED THEN UPDATE SET {updateSet}
+WHEN NOT MATCHED THEN INSERT ({insertColumns}) VALUES ({insertValues});");
+            return;
+        }
+
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            var onClause = string.Join(" AND ", keyValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"));
+            var sourceColumns = string.Join(", ", columns.Select(c => $"{FormatSqlValue(allValues[c])} AS {c}"));
+            var updateSet = additionalValues is not null && additionalValues.Count > 0
+                ? string.Join(", ", additionalValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"))
+                : string.Join(", ", keyValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"));
+            var insertColumns = string.Join(", ", columns.Select(c => $"target.{c}"));
+            var insertValues = string.Join(", ", columns.Select(c => $"source.{c}"));
+
+            self.Execute.Sql($@"MERGE INTO {qualifiedTable} target
+USING (SELECT {sourceColumns} FROM DUAL) source
+ON ({onClause})
+WHEN MATCHED THEN UPDATE SET {updateSet}
+WHEN NOT MATCHED THEN INSERT ({insertColumns}) VALUES ({insertValues});");
+            return;
+        }
+
+        if (databaseType.IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            var updateSet = additionalValues is not null && additionalValues.Count > 0
+                ? string.Join(", ", additionalValues.Select(kv => $"{kv.Key} = VALUES({kv.Key})"))
+                : string.Join(", ", keyValues.Select(kv => $"{kv.Key} = VALUES({kv.Key})"));
+
+            self.Execute.Sql($@"INSERT INTO {qualifiedTable} ({columnList}) VALUES ({valueList})
+ON DUPLICATE KEY UPDATE {updateSet};");
+            return;
+        }
+
+        // PostgreSQL / SQLite: ON CONFLICT ... DO UPDATE
+        var keyColumnList = string.Join(", ", keyValues.Keys);
+        var conflictUpdateSet = additionalValues is not null && additionalValues.Count > 0
+            ? string.Join(", ", additionalValues.Select(kv => $"{kv.Key} = EXCLUDED.{kv.Key}"))
+            : string.Join(", ", keyValues.Select(kv => $"{kv.Key} = EXCLUDED.{kv.Key}"));
+
+        self.Execute.Sql($@"INSERT INTO {qualifiedTable} ({columnList}) VALUES ({valueList})
+ON CONFLICT ({keyColumnList}) DO UPDATE SET {conflictUpdateSet};");
+    }
+
+    /// <summary>
+    /// Executes <paramref name="executeSql"/> only if <paramref name="conditionSql"/> returns at least one row.
+    /// An escape hatch for idempotent operations not covered by the specialized methods.
+    /// </summary>
+    /// <remarks>
+    /// Supported on SQL Server (<c>IF EXISTS ... EXEC</c>), PostgreSQL (<c>DO $$ ... END $$</c>),
+    /// and Oracle (<c>DECLARE ... EXECUTE IMMEDIATE</c>). Not supported on MySQL or SQLite.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="conditionSql">A <c>SELECT</c> statement; if it returns any rows, <paramref name="executeSql"/> runs.</param>
+    /// <param name="executeSql">The SQL statement to execute when the condition is met.</param>
+    public static void ExecuteSqlIfExists(
+        this Migration self,
+        string conditionSql,
+        string executeSql)
+    {
+        var databaseType = self.GetDatabaseType();
+
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($@"IF EXISTS ({conditionSql})
+    EXEC('{executeSql.Replace("'", "''")}');");
+            return;
+        }
+
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($@"DO $$
+BEGIN
+    IF EXISTS ({conditionSql}) THEN
+        EXECUTE '{executeSql.Replace("'", "''")}';
+    END IF;
+END $$;");
+            return;
+        }
+
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($@"
+DECLARE
+    v_cnt NUMBER;
+BEGIN
+    SELECT COUNT(*) INTO v_cnt FROM ({conditionSql}) WHERE ROWNUM = 1;
+    IF v_cnt > 0 THEN
+        EXECUTE IMMEDIATE '{executeSql.Replace("'", "''")}';
+    END IF;
+END;");
+            return;
+        }
+
+        throw new NotSupportedException($"ExecuteSqlIfExists is not supported on {databaseType}.");
+    }
+
+    /// <summary>
+    /// Executes <paramref name="executeSql"/> only if <paramref name="conditionSql"/> returns no rows.
+    /// An escape hatch for idempotent operations not covered by the specialized methods.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="conditionSql">A <c>SELECT</c> statement; if it returns no rows, <paramref name="executeSql"/> runs.</param>
+    /// <param name="executeSql">The SQL statement to execute when the condition is not met.</param>
+    public static void ExecuteSqlIfNotExists(
+        this Migration self,
+        string conditionSql,
+        string executeSql)
+    {
+        var databaseType = self.GetDatabaseType();
+
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($@"IF NOT EXISTS ({conditionSql})
+    EXEC('{executeSql.Replace("'", "''")}');");
+            return;
+        }
+
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($@"DO $$
+BEGIN
+    IF NOT EXISTS ({conditionSql}) THEN
+        EXECUTE '{executeSql.Replace("'", "''")}';
+    END IF;
+END $$;");
+            return;
+        }
+
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($@"
+DECLARE
+    v_cnt NUMBER;
+BEGIN
+    SELECT COUNT(*) INTO v_cnt FROM ({conditionSql}) WHERE ROWNUM = 1;
+    IF v_cnt = 0 THEN
+        EXECUTE IMMEDIATE '{executeSql.Replace("'", "''")}';
+    END IF;
+END;");
+            return;
+        }
+
+        throw new NotSupportedException($"ExecuteSqlIfNotExists is not supported on {databaseType}.");
+    }
+
     private static string QualifyTable(string schemaName, string tableName)
         => string.IsNullOrEmpty(schemaName) ? tableName : $"{schemaName}.{tableName}";
 
