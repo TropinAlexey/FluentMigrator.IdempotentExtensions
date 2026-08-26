@@ -78,10 +78,10 @@ public class CreateUsersTable : Migration
         // Creates unique constraint only if it doesn't exist
         this.CreateUniqueConstraintIfNotExists("users", "uc_users_email", new[] { "email" });
 
-        // Idempotent seed data
+        // Idempotent seed data — anonymous objects, just like FluentMigrator's own API
         this.InsertDataIfNotExists("users",
-            keyValues: new Dictionary<string, object?> { ["email"] = "admin@example.com" },
-            additionalValues: new Dictionary<string, object?> { ["name"] = "Admin" });
+            keyValues: new { email = "admin@example.com" },
+            additionalValues: new { name = "Admin" });
     }
 
     public override void Down()
@@ -513,18 +513,17 @@ Drops a sequence if it exists. **Not supported on MySQL/MariaDB or SQLite.**
 
 #### `InsertDataIfNotExists()`
 
-```csharp
-void InsertDataIfNotExists(
-    this Migration self,
-    string tableName,
-    IReadOnlyDictionary<string, object?> keyValues,
-    IReadOnlyDictionary<string, object?>? additionalValues = null,
-    string? schemaName = null)
-```
-
 Inserts a row only if no row matching `keyValues` already exists. Uses a single portable `INSERT ... SELECT ... WHERE NOT EXISTS (...)` statement. Handles `null` (`IS NULL`), `Guid`, `bool` (→ `1`/`0`), and `enum` (→ numeric) values.
 
+All data methods accept both **anonymous objects** (recommended) and `IReadOnlyDictionary<string, object?>`:
+
 ```csharp
+// anonymous object — clean, FluentMigrator-style API
+this.InsertDataIfNotExists("statuses",
+    keyValues: new { code = "ACTIVE" },
+    additionalValues: new { label = "Active" });
+
+// dictionary — still supported for dynamic scenarios
 this.InsertDataIfNotExists("statuses",
     keyValues: new Dictionary<string, object?> { ["code"] = "ACTIVE" },
     additionalValues: new Dictionary<string, object?> { ["label"] = "Active" });
@@ -532,26 +531,25 @@ this.InsertDataIfNotExists("statuses",
 
 #### `UpsertData()`
 
-```csharp
-void UpsertData(
-    this Migration self,
-    string tableName,
-    IReadOnlyDictionary<string, object> keyValues,
-    IReadOnlyDictionary<string, object?>? additionalValues = null,
-    string? schemaName = null)
-```
-
 Inserts a row if no row matching `keyValues` exists; otherwise updates the matching row with `additionalValues`. Uses provider-specific syntax: `MERGE` on SQL Server/Oracle, `ON CONFLICT ... DO UPDATE` on PostgreSQL/SQLite, `ON DUPLICATE KEY UPDATE` on MySQL. PostgreSQL, MySQL, and SQLite require a UNIQUE constraint (or PRIMARY KEY) on the key columns.
 
 ```csharp
 this.UpsertData("statuses",
-    keyValues: new Dictionary<string, object?> { ["code"] = "ACTIVE" },
-    additionalValues: new Dictionary<string, object?> { ["label"] = "Active" });
+    keyValues: new { code = "ACTIVE" },
+    additionalValues: new { label = "Active" });
 ```
 
 #### `UpdateDataIfExists()` / `DeleteDataIfExists()`
 
 Portable `UPDATE`/`DELETE` helpers matching rows by key columns. Naturally idempotent on all providers (zero-match is a no-op).
+
+```csharp
+this.UpdateDataIfExists("statuses",
+    keyValues: new { code = "ACTIVE" },
+    setValues: new { label = "Enabled" });
+
+this.DeleteDataIfExists("statuses", new { code = "DEPRECATED" });
+```
 
 </details>
 
@@ -692,6 +690,13 @@ Drops the `DEFAULT` constraint on a column by locating it via `sys.default_const
 > **FluentMigrator version:** requires `FluentMigrator 6.*` or later.
 
 ## What's New
+
+<details>
+<summary><b>v1.6.0</b> — Anonymous object overloads for all data methods</summary>
+
+- All four data methods (`InsertDataIfNotExists`, `UpsertData`, `UpdateDataIfExists`, `DeleteDataIfExists`) now accept anonymous objects instead of dictionaries — `new { code = "ACTIVE" }` instead of `new Dictionary<string, object?> { ["code"] = "ACTIVE" }`.
+- Dictionary overloads remain for backwards compatibility and dynamic scenarios.
+</details>
 
 <details>
 <summary><b>v1.5.1</b> — New methods: upsert, conditional SQL, alter sequence, create-or-replace view</summary>

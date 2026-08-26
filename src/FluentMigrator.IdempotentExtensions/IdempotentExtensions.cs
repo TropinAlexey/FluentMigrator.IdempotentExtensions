@@ -11,6 +11,7 @@ using FluentMigrator.Builders.Create.Table;
 using FluentMigrator.Builders.Delete.Constraint;
 using FluentMigrator.Builders.Delete.Index;
 using FluentMigrator.Infrastructure;
+using System.Reflection;
 
 /// <summary>
 /// Idempotent extension methods for FluentMigrator migrations.
@@ -1433,4 +1434,49 @@ END;");
 
     private static bool ColumnExists(this Migration self, string tableName, string colName, string schemaName)
         => self.Schema.Schema(schemaName).Table(tableName).Column(colName).Exists();
+
+    private static Dictionary<string, object?> ObjectToDictionary(object obj)
+        => obj.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
+              .ToDictionary(p => p.Name, p => p.GetValue(obj));
+
+    private static Dictionary<string, object> ObjectToNonNullDictionary(object obj)
+        => obj.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
+              .ToDictionary(p => p.Name, p => p.GetValue(obj)!);
+
+    /// <inheritdoc cref="InsertDataIfNotExists(Migration, string, IReadOnlyDictionary{string, object?}, IReadOnlyDictionary{string, object?}?, string?)"/>
+    public static void InsertDataIfNotExists(
+        this Migration self,
+        string tableName,
+        object keyValues,
+        object? additionalValues = null,
+        string? schemaName = null)
+        => InsertDataIfNotExists(self, tableName, ObjectToDictionary(keyValues),
+            additionalValues is not null ? ObjectToDictionary(additionalValues) : null, schemaName);
+
+    /// <inheritdoc cref="UpdateDataIfExists(Migration, string, IReadOnlyDictionary{string, object?}, IReadOnlyDictionary{string, object?}, string?)"/>
+    public static void UpdateDataIfExists(
+        this Migration self,
+        string tableName,
+        object keyValues,
+        object setValues,
+        string? schemaName = null)
+        => UpdateDataIfExists(self, tableName, ObjectToDictionary(keyValues), ObjectToDictionary(setValues), schemaName);
+
+    /// <inheritdoc cref="DeleteDataIfExists(Migration, string, IReadOnlyDictionary{string, object?}, string?)"/>
+    public static void DeleteDataIfExists(
+        this Migration self,
+        string tableName,
+        object keyValues,
+        string? schemaName = null)
+        => DeleteDataIfExists(self, tableName, ObjectToDictionary(keyValues), schemaName);
+
+    /// <inheritdoc cref="UpsertData(Migration, string, IReadOnlyDictionary{string, object}, IReadOnlyDictionary{string, object?}?, string?)"/>
+    public static void UpsertData(
+        this Migration self,
+        string tableName,
+        object keyValues,
+        object? additionalValues = null,
+        string? schemaName = null)
+        => UpsertData(self, tableName, ObjectToNonNullDictionary(keyValues),
+            additionalValues is not null ? ObjectToDictionary(additionalValues) : null, schemaName);
 }

@@ -346,6 +346,56 @@ public sealed class IdempotentExtensionsTests : IDisposable
         Assert.Throws<NotSupportedException>(() => Run(new ExecuteSqlIfNotExistsMigration()));
     }
 
+    [Fact]
+    public void InsertDataIfNotExists_AnonymousObject_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new InsertSeedDataAnonymousMigration());
+        Run(new InsertSeedDataAnonymousMigration());
+
+        Assert.Equal(1, CountRows("test_users"));
+    }
+
+    [Fact]
+    public void UpdateDataIfExists_AnonymousObject_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new InsertSeedDataAnonymousMigration());
+        Run(new UpdateSeedDataAnonymousMigration());
+        var ex = Record.Exception(() => Run(new UpdateSeedDataAnonymousMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void DeleteDataIfExists_AnonymousObject_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new InsertSeedDataAnonymousMigration());
+        Run(new DeleteSeedDataAnonymousMigration());
+        var ex = Record.Exception(() => Run(new DeleteSeedDataAnonymousMigration()));
+        Assert.Null(ex);
+        Assert.Equal(0, CountRows("test_users"));
+    }
+
+    [Fact]
+    public void UpsertData_AnonymousObject_InsertsAndUpdates()
+    {
+        Run(new CreateTableMigration());
+        Run(new AddUniqueConstraintOnNameMigration());
+        Run(new UpsertDataAnonymousMigration());
+        Assert.Equal(1, CountRows("test_users"));
+
+        Run(new UpsertDataAnonymousUpdateMigration());
+        Assert.Equal(1, CountRows("test_users"));
+
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT email FROM test_users WHERE name = 'anon-upsert'";
+        var email = (string)cmd.ExecuteScalar()!;
+        Assert.Equal("updated-anon@example.com", email);
+    }
+
     public void Dispose()
     {
         if (File.Exists(_dbPath))
@@ -692,5 +742,63 @@ internal sealed class ExecuteSqlIfNotExistsMigration : Migration
     public override void Up() => this.ExecuteSqlIfNotExists(
         "SELECT 1 FROM test_users WHERE name = 'nobody'",
         "INSERT INTO test_users (name, email) VALUES ('inserted-by-ifnotexists', 'ne@example.com')");
+    public override void Down() { }
+}
+
+internal sealed class InsertSeedDataAnonymousMigration : Migration
+{
+    public override void Up()
+    {
+        this.InsertDataIfNotExists("test_users",
+            keyValues: new { name = "anon-user" },
+            additionalValues: new { email = "anon@example.com" },
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+internal sealed class UpdateSeedDataAnonymousMigration : Migration
+{
+    public override void Up()
+    {
+        this.UpdateDataIfExists("test_users",
+            keyValues: new { name = "anon-user" },
+            setValues: new { email = "anon-updated@example.com" },
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+internal sealed class DeleteSeedDataAnonymousMigration : Migration
+{
+    public override void Up() => this.DeleteDataIfExists("test_users", new { name = "anon-user" }, schemaName: "");
+    public override void Down() { }
+}
+
+internal sealed class UpsertDataAnonymousMigration : Migration
+{
+    public override void Up()
+    {
+        this.UpsertData("test_users",
+            keyValues: new { name = "anon-upsert" },
+            additionalValues: new { email = "anon-upsert@example.com" },
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+internal sealed class UpsertDataAnonymousUpdateMigration : Migration
+{
+    public override void Up()
+    {
+        this.UpsertData("test_users",
+            keyValues: new { name = "anon-upsert" },
+            additionalValues: new { email = "updated-anon@example.com" },
+            schemaName: "");
+    }
+
     public override void Down() { }
 }
