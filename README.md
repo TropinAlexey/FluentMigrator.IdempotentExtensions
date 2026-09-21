@@ -901,6 +901,12 @@ Drops the `DEFAULT` constraint on a column by locating it via `sys.default_const
 ## What's New
 
 <details>
+<summary><b>v1.7.1</b> — Version alignment (no code changes)</summary>
+
+- SqlServer package aligned to `1.7.0` with zero code changes, per [ADR-0001](docs/adr/0001-synchronized-package-versions.md): both packages now share one version, bumped together on every release. This also refreshes the core DLL embedded in the SqlServer package.
+</details>
+
+<details>
 <summary><b>v1.7.0</b> — Index & statistics maintenance</summary>
 
 - `ReorganizeIndexes(tableName)` — defragments all indexes on a table (`ALTER INDEX ALL ... REORGANIZE` on SQL Server, `REINDEX TABLE` on PostgreSQL, `OPTIMIZE TABLE` on MySQL, `REINDEX` on SQLite, per-index `REBUILD` loop on Oracle).
