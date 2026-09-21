@@ -91,6 +91,135 @@ public class CreateUsersTable : Migration
 }
 ```
 
+### Full tour — every method with an example
+
+Below is every method in the core package, grouped by topic. `schemaName` is omitted everywhere for brevity — it is auto-detected per provider (`dbo` on SQL Server, `public` on PostgreSQL, empty on MySQL/SQLite/Oracle); pass it explicitly for multi-tenant setups. Provider limitations are noted inline.
+
+**Tables**
+
+```csharp
+// Rename a table, create an audit log table
+this.RenameTableIfExists("users", "app_users");
+this.CreateLogTableIfNotExists("app_users"); // creates app_users_log(id, timestamp, username, action, record_id)
+
+// Drop only if it exists — the standard Down() counterpart
+this.DropTableIfExists("app_users");
+```
+
+**Columns**
+
+```csharp
+this.AlterColumnIfExists("users", "email", c => c.AsString(1000).Nullable()); // retype / resize
+this.RenameColumnIfExists("users", "name", "full_name");
+this.DeleteColumnIfExists("users", "legacy_flag");
+```
+
+**Indexes**
+
+```csharp
+this.CreateCompositeIndexIfNotExists("orders", new[] { "user_id", "status" },
+    idx => idx.WithOptions().NonClustered());
+
+this.DropIndexIfExists("users", "email", "index_email", d => d); // no-op when missing
+this.RenameIndexIfExists("users", "index_email", "idx_users_email"); // not on SQLite
+```
+
+**Constraints & keys**
+
+```csharp
+this.CreateCheckConstraintIfNotExists("users", "ck_users_age", "age >= 0"); // not on SQLite
+this.CreatePrimaryKeyIfNotExists("legacy_orders", "pk_legacy_orders", new[] { "code" }); // not on SQLite
+this.DropPrimaryKeyIfExists("legacy_orders", "pk_legacy_orders", d => d); // no-op when missing
+
+this.CreateForeignKeyIfNotExists("orders", "fk_orders_users",
+    new[] { "user_id" }, "users", new[] { "id" }); // not on SQLite
+this.DropForeignKeyIfExists("orders", "fk_orders_users");
+
+this.DropConstraintIfExists("users", "ck_users_age"); // drops UNIQUE or CHECK by name
+this.RenameConstraintIfExists("users", "uc_users_email", "uc_users_email_v2"); // SQL Server, PostgreSQL, Oracle
+```
+
+**Column defaults**
+
+```csharp
+this.AddColumnDefaultIfExists("users", "status", 0); // set DEFAULT only if the column exists; not on SQLite
+this.DropColumnDefaultIfExists("users", "status"); // any provider, incl. auto-named SQL Server constraints
+```
+
+**Schemas**
+
+```csharp
+this.CreateSchemaIfNotExists("billing");
+this.DropSchemaIfExists("billing_old"); // not on SQLite or Oracle
+```
+
+**Sequences** (not on MySQL/MariaDB or SQLite)
+
+```csharp
+this.CreateSequenceIfNotExists("order_number_seq", s => s.StartWith(1000).IncrementBy(1));
+this.AlterSequenceIfExists("order_number_seq", incrementBy: 5, maxValue: 10000);
+this.DropSequenceIfExists("order_number_seq");
+```
+
+**Data** (anonymous objects, just like FluentMigrator's own API)
+
+```csharp
+this.UpsertData("statuses",
+    keyValues: new { code = "ACTIVE" },
+    additionalValues: new { label = "Active" }); // INSERT or UPDATE; needs UNIQUE key on PG/MySQL/SQLite
+
+this.UpdateDataIfExists("statuses",
+    keyValues: new { code = "ACTIVE" },
+    setValues: new { label = "Enabled" }); // zero-match is a safe no-op
+
+this.DeleteDataIfExists("statuses", new { code = "DEPRECATED" });
+```
+
+**Views, triggers, functions**
+
+```csharp
+this.CreateViewIfNotExists("active_users", "SELECT id, email FROM users WHERE active = 1");
+this.CreateOrReplaceView("active_users", "SELECT id, email, name FROM users WHERE active = 1"); // redefine
+this.DropViewIfExists("active_users");
+
+// Trigger body is provider-specific — you supply the full CREATE TRIGGER, the method makes re-running safe
+this.CreateTriggerIfNotExists("trg_users_audit", "users",
+    "CREATE TRIGGER trg_users_audit ON users AFTER INSERT AS BEGIN ... END");
+this.DropTriggerIfExists("trg_users_audit", "users");
+
+// Functions: SQL Server, PostgreSQL, Oracle (e.g. a Postgres trigger function must exist first)
+this.CreateFunctionIfNotExists("touch_updated_at",
+    "CREATE FUNCTION touch_updated_at() RETURNS trigger AS $$ BEGIN ... END; $$ LANGUAGE plpgsql;");
+this.DropFunctionIfExists("touch_updated_at");
+```
+
+**Conditional SQL** — escape hatch (SQL Server, PostgreSQL, Oracle)
+
+```csharp
+this.ExecuteSqlIfExists(
+    "SELECT 1 FROM sys.server_principals WHERE name = 'app_user'",
+    "ALTER LOGIN app_user DISABLE");
+
+this.ExecuteSqlIfNotExists(
+    "SELECT 1 FROM sys.server_principals WHERE name = 'app_user'",
+    "CREATE LOGIN app_user WITH PASSWORD = 'secret'");
+```
+
+**Maintenance** — pure upkeep, safe to re-run every deploy, empty `Down()`
+
+```csharp
+this.ReorganizeIndexes("client_appointments");
+this.UpdateStatistics("client_appointments", samplePercent: 30); // sampling honored on SQL Server + Oracle
+```
+
+**SQL Server-only package** (`TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer`)
+
+```csharp
+using FluentMigrator.IdempotentExtensions.SqlServer;
+
+this.DropDefaultConstraintIfExists("users", "status"); // finds the auto-named DEFAULT via sys.default_constraints
+```
+
 ## Use Cases
 
 <details>
