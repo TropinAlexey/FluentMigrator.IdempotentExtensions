@@ -442,4 +442,14 @@ public abstract class IdempotentExtensionsIntegrationTestsBase : IAsyncLifetime
 
         Assert.Equal(0, CountRows("test_users"));
     }
+
+    [Fact]
+    public void MaintainTable_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new AddIndexMigration());
+        Run(new MaintainTableMigration());
+        var ex = Record.Exception(() => Run(new MaintainTableMigration()));
+        Assert.Null(ex);
+    }
 }

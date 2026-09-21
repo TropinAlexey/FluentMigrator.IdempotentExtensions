@@ -392,3 +392,15 @@ internal sealed class DeleteSeedDataMigration : Migration
     public override void Up() => this.DeleteDataIfExists("test_users", new Dictionary<string, object?> { ["name"] = "seed-user" });
     public override void Down() { }
 }
+
+[Migration(36)]
+internal sealed class MaintainTableMigration : Migration
+{
+    public override void Up()
+    {
+        this.ReorganizeIndexes("test_users");
+        this.UpdateStatistics("test_users", samplePercent: 30);
+    }
+
+    public override void Down() { }
+}

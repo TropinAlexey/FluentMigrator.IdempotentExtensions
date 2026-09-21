@@ -134,6 +134,29 @@ Alter.Table("users").AlterColumn("status").AsInt32().NotNullable();
 ```
 </details>
 
+<details>
+<summary><b>Regular index & statistics maintenance</b></summary>
+
+`ReorganizeIndexes` + `UpdateStatistics` are pure maintenance — no schema changes — so they are safe to re-run on every deploy. Pass table names as parameters (nothing is hardcoded) and loop over as many tables as you need:
+
+```csharp
+foreach (var table in new[] { "client_appointments", "client_cash_income", "client_appointment_result_procedures" })
+{
+    this.ReorganizeIndexes(table);
+    this.UpdateStatistics(table, samplePercent: 30);
+}
+```
+
+On SQL Server this is exactly equivalent to your familiar snippet:
+
+```sql
+ALTER INDEX ALL ON client_appointments REORGANIZE;
+UPDATE STATISTICS client_appointments WITH SAMPLE 30 PERCENT;
+```
+
+…but the same C# code also works on PostgreSQL, MySQL, SQLite, and Oracle (see the **Maintenance** section in API Reference for the per-database SQL mapping). `Down()` stays empty — there is nothing to roll back.
+</details>
+
 ## API Reference
 
 ### Core package
@@ -615,6 +638,59 @@ this.ExecuteSqlIfNotExists(
 
 </details>
 
+<details>
+<summary><b>Maintenance</b> — <code>ReorganizeIndexes</code>, <code>UpdateStatistics</code></summary>
+
+Pure maintenance operations: defragment indexes and refresh optimizer statistics. No schema changes, so both methods are safe to re-run on every deploy. Tables are always passed as parameters — nothing is hardcoded. If a table does not exist, the statement fails server-side (no silent skip).
+
+```csharp
+// Defragment all indexes on a table
+void ReorganizeIndexes(
+    this Migration self,
+    string tableName,
+    string? schemaName = null)
+
+// Refresh optimizer statistics; samplePercent is 1-100, null = server default
+void UpdateStatistics(
+    this Migration self,
+    string tableName,
+    int? samplePercent = 30,
+    string? schemaName = null)
+```
+
+```csharp
+[Migration(20240501)]
+public class MaintenanceClientTables : Migration
+{
+    public override void Up()
+    {
+        foreach (var table in new[] { "client_appointments", "client_cash_income", "client_appointment_result_procedures" })
+        {
+            this.ReorganizeIndexes(table);
+            this.UpdateStatistics(table, samplePercent: 30);
+        }
+    }
+
+    // Maintenance has nothing to roll back.
+    public override void Down() { }
+}
+```
+
+What each method actually executes per database:
+
+| Method | SQL Server | PostgreSQL | MySQL / MariaDB | SQLite | Oracle |
+|--------|:---:|:---:|:---:|:---:|:---:|
+| `ReorganizeIndexes("t")` | `ALTER INDEX ALL ON [dbo].[t] REORGANIZE;` | `REINDEX TABLE public.t;` | `OPTIMIZE TABLE t;` (also refreshes stats) | `REINDEX t;` | PL/SQL loop: `ALTER INDEX ... REBUILD` for every index on `t` |
+| `UpdateStatistics("t", 30)` | `UPDATE STATISTICS [dbo].[t] WITH SAMPLE 30 PERCENT;` | `ANALYZE public.t;` | `ANALYZE TABLE t;` | `ANALYZE t;` | `DBMS_STATS.GATHER_TABLE_STATS(..., estimate_percent => 30);` |
+
+Notes:
+
+- `samplePercent` is honored **only on SQL Server and Oracle**. PostgreSQL, MySQL, and SQLite have no per-table sampling clause, so the parameter is ignored there (their `ANALYZE` uses server defaults).
+- Pass `samplePercent: null` for server-default behavior everywhere: no sampling clause on SQL Server, `DBMS_STATS.AUTO_SAMPLE_SIZE` on Oracle.
+- Values outside 1–100 throw `ArgumentOutOfRangeException` immediately, before any SQL runs.
+
+</details>
+
 ### SQL Server package
 
 ```csharp
@@ -677,11 +753,15 @@ Drops the `DEFAULT` constraint on a column by locating it via `sys.default_const
 | `CreateOrReplaceView` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `ExecuteSqlIfExists` | ✅ | ✅ | ❌ | ❌ | ✅ |
 | `ExecuteSqlIfNotExists` | ✅ | ✅ | ❌ | ❌ | ✅ |
+| `ReorganizeIndexes` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `UpdateStatistics` | ✅ | ✅¹ | ✅¹ | ✅¹ | ✅ |
 | `WithIdColumn` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **SqlServer package** |   |   |   |   |   |
 | `DropDefaultConstraintIfExists` | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 > ⚠️ `AlterColumnIfExists` on Oracle: `.Nullable()` on an already-nullable column throws `ORA-01451` — an inherent Oracle restriction, not a library bug.
+>
+> ¹ `UpdateStatistics` runs everywhere, but `samplePercent` is honored only on SQL Server and Oracle — PostgreSQL, MySQL, and SQLite have no per-table sampling clause, so their `ANALYZE` uses server defaults.
 
 > **`schemaName` auto-detection:** When omitted, defaults to `"dbo"` for SQL Server, `"public"` for PostgreSQL, `""` for MySQL, SQLite, and Oracle (SQLite has no schema support; MySQL treats schema as the connection's database; Oracle schemas are the connected user, not a separate concept). Pass an explicit value for multi-tenant setups.
 >
@@ -690,6 +770,14 @@ Drops the `DEFAULT` constraint on a column by locating it via `sys.default_const
 > **FluentMigrator version:** requires `FluentMigrator 6.*` or later.
 
 ## What's New
+
+<details>
+<summary><b>v1.7.0</b> — Index & statistics maintenance</summary>
+
+- `ReorganizeIndexes(tableName)` — defragments all indexes on a table (`ALTER INDEX ALL ... REORGANIZE` on SQL Server, `REINDEX TABLE` on PostgreSQL, `OPTIMIZE TABLE` on MySQL, `REINDEX` on SQLite, per-index `REBUILD` loop on Oracle).
+- `UpdateStatistics(tableName, samplePercent: 30)` — refreshes optimizer statistics (`UPDATE STATISTICS ... WITH SAMPLE n PERCENT` on SQL Server, `ANALYZE` on PostgreSQL/MySQL/SQLite, `DBMS_STATS.GATHER_TABLE_STATS` on Oracle). Sampling is honored on SQL Server and Oracle only; `null` means server default.
+- Both are pure maintenance (no schema changes, empty `Down()`), tables are passed as parameters, and re-running is always safe.
+</details>
 
 <details>
 <summary><b>v1.6.0</b> — Anonymous object overloads for all data methods</summary>

@@ -1370,6 +1370,157 @@ END;");
         throw new NotSupportedException($"ExecuteSqlIfNotExists is not supported on {databaseType}.");
     }
 
+    /// <summary>
+    /// Reorganizes/defragments all indexes on <paramref name="tableName"/>. Pure maintenance — no
+    /// schema changes — so it is safe to re-run on every deploy.
+    /// </summary>
+    /// <remarks>
+    /// Provider mapping: SQL Server runs <c>ALTER INDEX ALL ... REORGANIZE</c>; PostgreSQL runs
+    /// <c>REINDEX TABLE</c>; MySQL/MariaDB runs <c>OPTIMIZE TABLE</c> (which also refreshes index
+    /// statistics); SQLite runs <c>REINDEX table</c>; Oracle rebuilds each of the table's indexes via
+    /// a PL/SQL loop (<c>ALTER INDEX ... REBUILD</c>, plain rebuild so it works on every edition).
+    /// The table is passed as a parameter — nothing is hardcoded. If the table does not exist the
+    /// statement fails server-side (no silent skip).
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Table whose indexes should be reorganized.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void ReorganizeIndexes(
+        this Migration self,
+        string tableName,
+        string? schemaName = null)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+        var databaseType = self.GetDatabaseType();
+
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"ALTER INDEX ALL ON [{schemaName}].[{tableName}] REORGANIZE;");
+            return;
+        }
+
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"REINDEX TABLE {QualifyTable(schemaName, tableName)};");
+            return;
+        }
+
+        if (databaseType.IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"OPTIMIZE TABLE {QualifyTable(schemaName, tableName)};");
+            return;
+        }
+
+        if (databaseType.IndexOf("SQLite", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"REINDEX {tableName};");
+            return;
+        }
+
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            // Oracle has no "reorganize all indexes on a table" statement: loop over the table's
+            // indexes and rebuild each one. Unquoted identifiers are stored uppercase, hence UPPER().
+            var escapedTable = tableName.Replace("'", "''");
+            var escapedSchema = schemaName.Replace("'", "''");
+
+            var indexCursor = string.IsNullOrEmpty(schemaName)
+                ? $"SELECT index_name FROM user_indexes WHERE table_name = UPPER('{escapedTable}')"
+                : $"SELECT owner, index_name FROM all_indexes WHERE table_name = UPPER('{escapedTable}') AND owner = UPPER('{escapedSchema}')";
+
+            var rebuildSql = string.IsNullOrEmpty(schemaName)
+                ? "'ALTER INDEX \"' || idx.index_name || '\" REBUILD'"
+                : "'ALTER INDEX \"' || idx.owner || '\".\"' || idx.index_name || '\" REBUILD'";
+
+            self.Execute.Sql($@"
+BEGIN
+    FOR idx IN ({indexCursor}) LOOP
+        EXECUTE IMMEDIATE {rebuildSql};
+    END LOOP;
+END;");
+            return;
+        }
+
+        throw new NotSupportedException($"ReorganizeIndexes is not supported on {databaseType}.");
+    }
+
+    /// <summary>
+    /// Refreshes the optimizer statistics for <paramref name="tableName"/>. Pure maintenance — no
+    /// schema changes — so it is safe to re-run on every deploy.
+    /// </summary>
+    /// <remarks>
+    /// Provider mapping: SQL Server runs <c>UPDATE STATISTICS ... WITH SAMPLE n PERCENT</c> (or without
+    /// a sampling clause when <paramref name="samplePercent"/> is <c>null</c>); PostgreSQL runs
+    /// <c>ANALYZE</c>; MySQL/MariaDB runs <c>ANALYZE TABLE</c>; SQLite runs <c>ANALYZE table</c>;
+    /// Oracle calls <c>DBMS_STATS.GATHER_TABLE_STATS</c> with <c>estimate_percent</c>
+    /// (<c>DBMS_STATS.AUTO_SAMPLE_SIZE</c> when <paramref name="samplePercent"/> is <c>null</c>).
+    /// Sampling is only honored on SQL Server and Oracle — the other providers have no per-table
+    /// sampling clause, so <paramref name="samplePercent"/> is ignored there.
+    /// The table is passed as a parameter — nothing is hardcoded. If the table does not exist the
+    /// statement fails server-side (no silent skip).
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Table whose statistics should be refreshed.</param>
+    /// <param name="samplePercent">Sampling percent, 1–100. Honored on SQL Server and Oracle only.
+    /// <c>null</c> means server default (no sampling clause / auto sample size). Defaults to 30.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    public static void UpdateStatistics(
+        this Migration self,
+        string tableName,
+        int? samplePercent = 30,
+        string? schemaName = null)
+    {
+        if (samplePercent.HasValue && (samplePercent.Value < 1 || samplePercent.Value > 100))
+            throw new ArgumentOutOfRangeException(nameof(samplePercent), "Sample percent must be between 1 and 100.");
+
+        schemaName ??= self.ResolveDefaultSchema();
+        var databaseType = self.GetDatabaseType();
+
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            var sampleClause = samplePercent.HasValue ? $" WITH SAMPLE {samplePercent.Value} PERCENT" : "";
+            self.Execute.Sql($"UPDATE STATISTICS [{schemaName}].[{tableName}]{sampleClause};");
+            return;
+        }
+
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"ANALYZE {QualifyTable(schemaName, tableName)};");
+            return;
+        }
+
+        if (databaseType.IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"ANALYZE TABLE {QualifyTable(schemaName, tableName)};");
+            return;
+        }
+
+        if (databaseType.IndexOf("SQLite", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            self.Execute.Sql($"ANALYZE {tableName};");
+            return;
+        }
+
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            var estimate = samplePercent.HasValue
+                ? samplePercent.Value.ToString(CultureInfo.InvariantCulture)
+                : "DBMS_STATS.AUTO_SAMPLE_SIZE";
+            var owner = string.IsNullOrEmpty(schemaName) ? "USER" : $"UPPER('{schemaName.Replace("'", "''")}')";
+            var escapedTable = tableName.Replace("'", "''");
+
+            self.Execute.Sql($@"
+BEGIN
+    DBMS_STATS.GATHER_TABLE_STATS(ownname => {owner}, tabname => UPPER('{escapedTable}'), estimate_percent => {estimate});
+END;");
+            return;
+        }
+
+        throw new NotSupportedException($"UpdateStatistics is not supported on {databaseType}.");
+    }
+
     private static string QualifyTable(string schemaName, string tableName)
         => string.IsNullOrEmpty(schemaName) ? tableName : $"{schemaName}.{tableName}";
 

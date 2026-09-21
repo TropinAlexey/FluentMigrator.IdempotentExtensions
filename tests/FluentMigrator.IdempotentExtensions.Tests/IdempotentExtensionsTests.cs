@@ -396,6 +396,23 @@ public sealed class IdempotentExtensionsTests : IDisposable
         Assert.Equal("updated-anon@example.com", email);
     }
 
+    [Fact]
+    public void ReorganizeIndexes_IsIdempotent()
+    {
+        Run(new CreateTableMigration());
+        Run(new AddIndexMigration());
+        Run(new MaintainTableMigration());
+        var ex = Record.Exception(() => Run(new MaintainTableMigration()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void UpdateStatistics_InvalidSamplePercent_Throws()
+    {
+        Run(new CreateTableMigration());
+        Assert.Throws<ArgumentOutOfRangeException>(() => Run(new UpdateStatisticsInvalidSampleMigration()));
+    }
+
     public void Dispose()
     {
         if (File.Exists(_dbPath))
@@ -800,5 +817,22 @@ internal sealed class UpsertDataAnonymousUpdateMigration : Migration
             schemaName: "");
     }
 
+    public override void Down() { }
+}
+
+internal sealed class MaintainTableMigration : Migration
+{
+    public override void Up()
+    {
+        this.ReorganizeIndexes("test_users", schemaName: "");
+        this.UpdateStatistics("test_users", samplePercent: 30, schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+internal sealed class UpdateStatisticsInvalidSampleMigration : Migration
+{
+    public override void Up() => this.UpdateStatistics("test_users", samplePercent: 101, schemaName: "");
     public override void Down() { }
 }
