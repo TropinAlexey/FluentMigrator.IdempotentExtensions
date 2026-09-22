@@ -47,9 +47,17 @@ public static class IdempotentExtensions
     {
         schemaName ??= self.ResolveDefaultSchema();
 
-        return !self.TableExists(tableName, schemaName)
-            ? constructTable(self.Create.Table(tableName))
-            : null;
+        if (!self.TableExists(tableName, schemaName))
+        {
+            // InSchema mutates the shared CreateTableExpression in place (and returns the same
+            // builder narrowed), so call it for the side effect and keep passing the wide
+            // interface the constructTable delegate expects.
+            var table = self.Create.Table(tableName);
+            table.InSchema(schemaName);
+            return constructTable(table);
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -161,33 +169,37 @@ public static class IdempotentExtensions
         string? schemaName = null)
     {
         schemaName ??= self.ResolveDefaultSchema();
+        var databaseType = self.GetDatabaseType();
 
-        if (self.GetDatabaseType().IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
         {
+            var escSchema = EscapeBracket(schemaName);
+            var escTable = EscapeBracket(tableName);
+            var escColumn = columnName.Replace("'", "''");
             self.Execute.Sql($@"
 IF EXISTS (
     SELECT 1
     FROM sys.default_constraints dc
     JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
-    WHERE dc.parent_object_id = OBJECT_ID(N'[{schemaName}].[{tableName}]')
-      AND c.name = N'{columnName}'
+    WHERE dc.parent_object_id = OBJECT_ID(N'[{escSchema}].[{escTable}]')
+      AND c.name = N'{escColumn}'
 )
 BEGIN
     DECLARE @constraintName SYSNAME;
-    DECLARE @sql NVARCHAR(500);
+    DECLARE @sql NVARCHAR(MAX);
 
     DECLARE cur CURSOR LOCAL FAST_FORWARD FOR
         SELECT dc.name
         FROM sys.default_constraints dc
         JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
-        WHERE dc.parent_object_id = OBJECT_ID(N'[{schemaName}].[{tableName}]')
-          AND c.name = N'{columnName}';
+        WHERE dc.parent_object_id = OBJECT_ID(N'[{escSchema}].[{escTable}]')
+          AND c.name = N'{escColumn}';
 
     OPEN cur;
     FETCH NEXT FROM cur INTO @constraintName;
     WHILE @@FETCH_STATUS = 0
     BEGIN
-        SET @sql = N'ALTER TABLE [{schemaName}].[{tableName}] DROP CONSTRAINT [' + @constraintName + N']';
+        SET @sql = N'ALTER TABLE [{escSchema}].[{escTable}] DROP CONSTRAINT ' + QUOTENAME(@constraintName);
         EXEC sp_executesql @sql;
         FETCH NEXT FROM cur INTO @constraintName;
     END;
@@ -197,9 +209,10 @@ END");
             return;
         }
 
-        if (self.GetDatabaseType().IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} MODIFY {columnName} DEFAULT NULL;");
+            // No trailing semicolon: Oracle does not allow it on direct DDL (ORA-00911).
+            self.Execute.Sql($"ALTER TABLE {QualifyTable(databaseType, schemaName, tableName)} MODIFY {QuoteIdent(databaseType, columnName)} DEFAULT NULL");
             return;
         }
 
@@ -209,25 +222,29 @@ END");
     }
 
     /// <summary>
-    /// Creates a <c>{tableName}_log</c> audit log table if it does not already exist.
+    /// Creates an audit log table if it does not already exist.
     /// The table includes: <c>id</c>, <c>timestamp</c>, <c>username</c>, <c>action</c>, <c>record_id</c>.
+    /// The default log table name is <c>{tableName}_log</c>; supply <paramref name="logTableName"/> to override.
     /// </summary>
     /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Base table name; the log table will be named <c>{tableName}_log</c>.</param>
+    /// <param name="tableName">Base table name; the log table will be named <c>{tableName}_log</c> unless overridden.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
     /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
     /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
+    /// <param name="logTableName">Explicit log table name. Defaults to <c>{tableName}_log</c> if omitted.</param>
     public static void CreateLogTableIfNotExists(
         this Migration self,
         string tableName,
-        string? schemaName = null)
+        string? schemaName = null,
+        string? logTableName = null)
     {
         schemaName ??= self.ResolveDefaultSchema();
+        logTableName ??= $"{tableName}_log";
 
-        if (self.TableExists($"{tableName}_log", schemaName))
+        if (self.TableExists(logTableName, schemaName))
             return;
 
-        self.Create.Table($"{tableName}_log").InSchema(schemaName)
+        self.Create.Table(logTableName).InSchema(schemaName)
             .WithIdColumn()
             .WithColumn("timestamp").AsDateTime().Nullable()
             .WithColumn("username").AsAnsiString(500)
@@ -236,8 +253,15 @@ END");
     }
 
     /// <summary>
-    /// Creates an index named <c>index_{columnName}</c> on <paramref name="columnName"/> if it does not already exist.
+    /// Creates an index on <paramref name="columnName"/> if it does not already exist.
+    /// The default index name is <c>index_{columnName}</c>; supply <paramref name="indexName"/> to override.
     /// </summary>
+    /// <remarks>
+    /// The default name does not include the table, so indexing the same column name on two tables
+    /// with defaults collides (and PostgreSQL requires index names to be unique per schema, so the
+    /// second <c>CREATE INDEX</c> would fail outright) — pass an explicit <paramref name="indexName"/>
+    /// in that case. The default is kept for backward compatibility.
+    /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Target table name.</param>
     /// <param name="columnName">Column to index.</param>
@@ -245,16 +269,18 @@ END");
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
     /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
     /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
+    /// <param name="indexName">Explicit index name. Defaults to <c>index_{tableName}_{columnName}</c> if omitted.</param>
     public static IFluentSyntax? CreateIndexIfNotExists(
         this MigrationBase self,
         string tableName,
         string columnName,
         Func<ICreateIndexColumnOptionsSyntax, IFluentSyntax> configureIndex,
-        string? schemaName = null)
+        string? schemaName = null,
+        string? indexName = null)
     {
         schemaName ??= self.ResolveDefaultSchema();
+        indexName ??= $"index_{columnName}";
 
-        var indexName = $"index_{columnName}";
         return !self.Schema.Schema(schemaName).Table(tableName).Index(indexName).Exists()
             ? configureIndex(self.Create.Index(indexName).OnTable(tableName).InSchema(schemaName).OnColumn(columnName))
             : null;
@@ -264,6 +290,13 @@ END");
     /// Creates a composite index on <paramref name="columns"/> if it does not already exist.
     /// The default index name is <c>index_{col1}_{col2}_…</c>; supply <paramref name="indexName"/> to override.
     /// </summary>
+    /// <remarks>
+    /// The <paramref name="columns"/> are pre-applied <c>Ascending()</c> before
+    /// <paramref name="configureIndex"/> runs (kept for backward compatibility — existing callers
+    /// like <c>idx =&gt; idx.WithOptions().Unique()</c> rely on it), so per-column sort direction
+    /// cannot be changed through this method. For mixed ASC/DESC indexes use raw SQL or an
+    /// explicit <c>Create.Index(...)</c> guarded by an existence check.
+    /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Target table name.</param>
     /// <param name="columns">Columns to include in the composite index (in order).</param>
@@ -327,6 +360,11 @@ END");
     /// Works on all databases supported by FluentMigrator.
     /// For default constraints use <see cref="DropColumnDefaultIfExists"/>.
     /// </summary>
+    /// <remarks>
+    /// This issues a generic <c>DROP CONSTRAINT</c>, which covers UNIQUE and CHECK constraints on
+    /// every provider. For foreign keys prefer <see cref="DropForeignKeyIfExists"/>, for primary
+    /// keys prefer <see cref="DropPrimaryKeyIfExists"/>.
+    /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Target table name.</param>
     /// <param name="constraintName">Name of the constraint to drop.</param>
@@ -365,7 +403,7 @@ END");
         schemaName ??= self.ResolveDefaultSchema();
 
         return self.Schema.Schema(schemaName).Table(tableName).Constraint(keyName).Exists()
-            ? configureDelete(self.Delete.UniqueConstraint(keyName).FromTable(tableName).InSchema(schemaName))
+            ? configureDelete(self.Delete.PrimaryKey(keyName).FromTable(tableName).InSchema(schemaName))
             : null;
     }
 
@@ -622,6 +660,8 @@ END");
     /// <remarks>
     /// To drop a check constraint, reuse <see cref="DropConstraintIfExists"/> — it issues a generic
     /// <c>DROP CONSTRAINT</c>, which SQL Server, PostgreSQL, and MySQL (8.0.19+) all accept for CHECK constraints.
+    /// The <paramref name="checkSql"/> expression is executed verbatim — trusted developer input only,
+    /// never end-user input.
     /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Target table name.</param>
@@ -641,7 +681,10 @@ END");
         if (self.Schema.Schema(schemaName).Table(tableName).Constraint(constraintName).Exists())
             return;
 
-        self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} ADD CONSTRAINT {constraintName} CHECK ({checkSql});");
+        var databaseType = self.GetDatabaseType();
+        // No trailing semicolon on Oracle direct DDL (ORA-00911).
+        var terminator = databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0 ? "" : ";";
+        self.Execute.Sql($"ALTER TABLE {QualifyTable(databaseType, schemaName, tableName)} ADD CONSTRAINT {QuoteIdent(databaseType, constraintName)} CHECK ({checkSql}){terminator}");
     }
 
     /// <summary>
@@ -660,41 +703,50 @@ END");
     /// <param name="defaultValue">The default value. Formatted as a SQL literal the same way as
     /// <see cref="InsertDataIfNotExists"/> values.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    /// <param name="constraintName">SQL Server only: explicit name for the created DEFAULT constraint.
+    /// Defaults to <c>DF_{tableName}_{columnName}</c> if omitted. Ignored on other providers
+    /// (their defaults are unnamed).</param>
     public static void AddColumnDefaultIfExists(
         this Migration self,
         string tableName,
         string columnName,
         object? defaultValue,
-        string? schemaName = null)
+        string? schemaName = null,
+        string? constraintName = null)
     {
         schemaName ??= self.ResolveDefaultSchema();
 
         if (!self.ColumnExists(tableName, columnName, schemaName))
             return;
 
-        var formattedValue = FormatSqlValue(defaultValue);
+        var databaseType = self.GetDatabaseType();
+        var formattedValue = FormatSqlValue(defaultValue, databaseType);
 
-        if (self.GetDatabaseType().IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
         {
+            var escSchema = EscapeBracket(schemaName);
+            var escTable = EscapeBracket(tableName);
+            var escColumn = EscapeBracket(columnName);
+            var escConstraint = EscapeBracket(constraintName ?? $"DF_{tableName}_{columnName}");
             self.Execute.Sql($@"
 IF NOT EXISTS (
     SELECT 1
     FROM sys.default_constraints dc
     JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
-    WHERE dc.parent_object_id = OBJECT_ID(N'[{schemaName}].[{tableName}]')
-      AND c.name = N'{columnName}'
+    WHERE dc.parent_object_id = OBJECT_ID(N'[{escSchema}].[{escTable}]')
+      AND c.name = N'{columnName.Replace("'", "''")}'
 )
-    ALTER TABLE [{schemaName}].[{tableName}] ADD CONSTRAINT [DF_{tableName}_{columnName}] DEFAULT {formattedValue} FOR [{columnName}];");
+    ALTER TABLE [{escSchema}].[{escTable}] ADD CONSTRAINT [{escConstraint}] DEFAULT {formattedValue} FOR [{escColumn}];");
             return;
         }
 
-        if (self.GetDatabaseType().IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} MODIFY {columnName} DEFAULT {formattedValue};");
+            self.Execute.Sql($"ALTER TABLE {QualifyTable(databaseType, schemaName, tableName)} MODIFY {QuoteIdent(databaseType, columnName)} DEFAULT {formattedValue}");
             return;
         }
 
-        self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} ALTER COLUMN {columnName} SET DEFAULT {formattedValue};");
+        self.Execute.Sql($"ALTER TABLE {QualifyTable(databaseType, schemaName, tableName)} ALTER COLUMN {QuoteIdent(databaseType, columnName)} SET DEFAULT {formattedValue};");
     }
 
     /// <summary>
@@ -708,8 +760,8 @@ IF NOT EXISTS (
     /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="viewName">Name of the view to create.</param>
-    /// <param name="selectSql">The view's <c>SELECT</c> statement, without the <c>CREATE VIEW ... AS</c> prefix.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    /// <param name="selectSql">The view's <c>SELECT</c> statement, without the <c>CREATE VIEW ... AS</c> prefix. Executed verbatim — trusted developer input only.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider. Ignored on SQLite (which has no schemas) — passing a non-empty value throws.</param>
     public static void CreateViewIfNotExists(
         this Migration self,
         string viewName,
@@ -721,24 +773,29 @@ IF NOT EXISTS (
 
         if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
         {
+            var escSchema = EscapeBracket(schemaName);
+            var escView = EscapeBracket(viewName);
             self.Execute.Sql($@"
-IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{schemaName}].[{viewName}]'))
-    EXEC('CREATE VIEW [{schemaName}].[{viewName}] AS {selectSql.Replace("'", "''")}');");
+IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{escSchema}].[{escView}]'))
+    EXEC sp_executesql N'CREATE VIEW [{escSchema}].[{escView}] AS {selectSql.Replace("'", "''")}';");
             return;
         }
 
         if (databaseType.IndexOf("SQLite", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"CREATE VIEW IF NOT EXISTS {viewName} AS {selectSql};");
+            if (!string.IsNullOrEmpty(schemaName))
+                throw new ArgumentException("SQLite has no schema support — schemaName must be empty.", nameof(schemaName));
+            self.Execute.Sql($"CREATE VIEW IF NOT EXISTS {QuoteIdent(databaseType, viewName)} AS {selectSql};");
             return;
         }
 
-        self.Execute.Sql($"CREATE OR REPLACE VIEW {QualifyTable(schemaName, viewName)} AS {selectSql};");
+        self.Execute.Sql($"CREATE OR REPLACE VIEW {QualifyTable(databaseType, schemaName, viewName)} AS {selectSql};");
     }
 
     /// <summary>
     /// Drops <paramref name="viewName"/> if it exists, via the native <c>DROP VIEW IF EXISTS</c> — supported
-    /// by SQL Server (2016+), PostgreSQL, MySQL, and SQLite alike.
+    /// by SQL Server (2016+), PostgreSQL, MySQL, and SQLite alike. On Oracle (which has no
+    /// <c>DROP VIEW IF EXISTS</c>) the ORA-00942 "table or view does not exist" error is swallowed instead.
     /// </summary>
     /// <param name="self">The migration instance.</param>
     /// <param name="viewName">Name of the view to drop.</param>
@@ -746,7 +803,24 @@ IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{schemaNam
     public static void DropViewIfExists(this Migration self, string viewName, string? schemaName = null)
     {
         schemaName ??= self.ResolveDefaultSchema();
-        self.Execute.Sql($"DROP VIEW IF EXISTS {QualifyTable(schemaName, viewName)};");
+        var databaseType = self.GetDatabaseType();
+
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            var qualified = string.IsNullOrEmpty(schemaName) ? viewName : $"{schemaName}.{viewName}";
+            self.Execute.Sql($@"
+BEGIN
+    EXECUTE IMMEDIATE 'DROP VIEW {EscapeLiteral(qualified)}';
+EXCEPTION
+    WHEN OTHERS THEN
+        IF SQLCODE != -942 THEN
+            RAISE;
+        END IF;
+END;");
+            return;
+        }
+
+        self.Execute.Sql($"DROP VIEW IF EXISTS {QualifyTable(databaseType, schemaName, viewName)};");
     }
 
     /// <summary>
@@ -761,19 +835,21 @@ IF NOT EXISTS (SELECT 1 FROM sys.views WHERE object_id = OBJECT_ID(N'[{schemaNam
     public static void DropTriggerIfExists(this Migration self, string triggerName, string tableName, string? schemaName = null)
     {
         schemaName ??= self.ResolveDefaultSchema();
+        var databaseType = self.GetDatabaseType();
 
-        if (self.GetDatabaseType().IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"DROP TRIGGER IF EXISTS {triggerName} ON {QualifyTable(schemaName, tableName)};");
+            self.Execute.Sql($"DROP TRIGGER IF EXISTS {QuoteIdent(databaseType, triggerName)} ON {QualifyTable(databaseType, schemaName, tableName)};");
             return;
         }
 
-        if (self.GetDatabaseType().IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             // Oracle has no DROP TRIGGER IF EXISTS: swallow ORA-04080 ("trigger does not exist").
+            var qualified = string.IsNullOrEmpty(schemaName) ? triggerName : $"{schemaName}.{triggerName}";
             self.Execute.Sql($@"
 BEGIN
-    EXECUTE IMMEDIATE 'DROP TRIGGER {triggerName}';
+    EXECUTE IMMEDIATE 'DROP TRIGGER {EscapeLiteral(qualified)}';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLCODE != -4080 THEN
@@ -783,7 +859,7 @@ END;");
             return;
         }
 
-        self.Execute.Sql($"DROP TRIGGER IF EXISTS {triggerName};");
+        self.Execute.Sql($"DROP TRIGGER IF EXISTS {QuoteIdent(databaseType, triggerName)};");
     }
 
     /// <summary>
@@ -795,6 +871,7 @@ END;");
     /// is no portable <c>CREATE TRIGGER IF NOT EXISTS</c>/<c>OR REPLACE</c> across SQL Server, PostgreSQL and
     /// MySQL — so the caller supplies the full <c>CREATE TRIGGER</c> statement for their target provider, and
     /// this only makes re-running that statement safe by dropping the old trigger first.
+    /// <paramref name="createTriggerSql"/> is executed verbatim — trusted developer input only.
     /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="triggerName">Name of the trigger being created.</param>
@@ -816,6 +893,11 @@ END;");
     /// Drops <paramref name="functionName"/> if it exists. Only supported on SQL Server, PostgreSQL and
     /// Oracle — MySQL/MariaDB and SQLite have no comparable general-purpose SQL function feature.
     /// </summary>
+    /// <remarks>
+    /// On PostgreSQL the zero-argument form is used (<c>DROP FUNCTION ... ();</c>). Overloaded
+    /// functions (same name, different signatures) cannot be addressed without their full argument
+    /// list — pass the name of a non-overloaded function, or manage overloads with raw SQL.
+    /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="functionName">Name of the function to drop.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
@@ -826,22 +908,23 @@ END;");
 
         if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"DROP FUNCTION IF EXISTS [{schemaName}].[{functionName}];");
+            self.Execute.Sql($"DROP FUNCTION IF EXISTS [{EscapeBracket(schemaName)}].[{EscapeBracket(functionName)}];");
             return;
         }
 
         if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"DROP FUNCTION IF EXISTS {QualifyTable(schemaName, functionName)};");
+            self.Execute.Sql($"DROP FUNCTION IF EXISTS {QualifyTable(databaseType, schemaName, functionName)}();");
             return;
         }
 
         if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             // Oracle has no DROP FUNCTION IF EXISTS: swallow ORA-04043 ("object does not exist").
+            var qualified = string.IsNullOrEmpty(schemaName) ? functionName : $"{schemaName}.{functionName}";
             self.Execute.Sql($@"
 BEGIN
-    EXECUTE IMMEDIATE 'DROP FUNCTION {functionName}';
+    EXECUTE IMMEDIATE 'DROP FUNCTION {EscapeLiteral(qualified)}';
 EXCEPTION
     WHEN OTHERS THEN
         IF SQLCODE != -4043 THEN
@@ -859,6 +942,7 @@ END;");
     /// (via <see cref="DropFunctionIfExists"/>), then executing <paramref name="createFunctionSql"/> verbatim.
     /// Only supported on SQL Server and PostgreSQL. Mainly useful for PostgreSQL trigger functions, which
     /// must exist before a trigger created via <see cref="CreateTriggerIfNotExists"/> can reference them.
+    /// <paramref name="createFunctionSql"/> is executed verbatim — trusted developer input only.
     /// </summary>
     /// <param name="self">The migration instance.</param>
     /// <param name="functionName">Name of the function being created.</param>
@@ -900,20 +984,20 @@ END;");
 
         if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"EXEC sp_rename N'{schemaName}.{tableName}.{oldName}', N'{newName}', N'INDEX';");
+            self.Execute.Sql($"EXEC sp_rename N'{EscapeLiteral(schemaName)}.{EscapeLiteral(tableName)}.{EscapeLiteral(oldName)}', N'{EscapeLiteral(newName)}', N'INDEX';");
             return;
         }
 
         if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"ALTER INDEX {QualifyTable(schemaName, oldName)} RENAME TO {newName};");
+            self.Execute.Sql($"ALTER INDEX {QualifyTable(databaseType, schemaName, oldName)} RENAME TO {QuoteIdent(databaseType, newName)};");
             return;
         }
 
         if (databaseType.IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0 ||
             databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} RENAME INDEX {oldName} TO {newName};");
+            self.Execute.Sql($"ALTER TABLE {QualifyTable(databaseType, schemaName, tableName)} RENAME INDEX {QuoteIdent(databaseType, oldName)} TO {QuoteIdent(databaseType, newName)};");
             return;
         }
 
@@ -921,7 +1005,8 @@ END;");
         {
             // Oracle index names are unique per schema, so no table qualifier is needed — but the
             // schema itself still must be, otherwise this targets the connected user's default schema.
-            self.Execute.Sql($"ALTER INDEX {QualifyTable(schemaName, oldName)} RENAME TO {newName};");
+            // No trailing semicolon on Oracle direct DDL (ORA-00911).
+            self.Execute.Sql($"ALTER INDEX {QualifyTable(databaseType, schemaName, oldName)} RENAME TO {QuoteIdent(databaseType, newName)}");
             return;
         }
 
@@ -959,14 +1044,20 @@ END;");
             // CHECK/DEFAULT/FOREIGN KEY constraints are true objects (needs 'OBJECT' or nothing) — since this
             // method doesn't know which kind of constraint it's renaming, claiming the wrong type makes
             // sp_rename fail with "the claimed @objtype is wrong". Omitting it lets SQL Server resolve it itself.
-            self.Execute.Sql($"EXEC sp_rename N'{schemaName}.{tableName}.{oldName}', N'{newName}';");
+            self.Execute.Sql($"EXEC sp_rename N'{EscapeLiteral(schemaName)}.{EscapeLiteral(tableName)}.{EscapeLiteral(oldName)}', N'{EscapeLiteral(newName)}';");
             return;
         }
 
-        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0 ||
-            databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"ALTER TABLE {QualifyTable(schemaName, tableName)} RENAME CONSTRAINT {oldName} TO {newName};");
+            self.Execute.Sql($"ALTER TABLE {QualifyTable(databaseType, schemaName, tableName)} RENAME CONSTRAINT {QuoteIdent(databaseType, oldName)} TO {QuoteIdent(databaseType, newName)};");
+            return;
+        }
+
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            // No trailing semicolon on Oracle direct DDL (ORA-00911).
+            self.Execute.Sql($"ALTER TABLE {QualifyTable(databaseType, schemaName, tableName)} RENAME CONSTRAINT {QuoteIdent(databaseType, oldName)} TO {QuoteIdent(databaseType, newName)}");
             return;
         }
 
@@ -981,8 +1072,8 @@ END;");
     /// </summary>
     /// <remarks>
     /// Uses the same portable value formatting as <see cref="InsertDataIfNotExists"/> (strings quote-escaped,
-    /// <c>null</c> compared with <c>IS NULL</c>, <see cref="Guid"/> quoted, enums as their numeric value);
-    /// table and column identifiers are not quoted, so avoid reserved words.
+    /// <c>null</c> compared with <c>IS NULL</c>, <see cref="Guid"/> quoted, enums as their numeric value).
+    /// Only whitelisted value types are accepted — anything else throws instead of being embedded blindly.
     /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Target table name.</param>
@@ -1002,11 +1093,12 @@ END;");
             throw new ArgumentException("At least one column to set is required.", nameof(setValues));
 
         schemaName ??= self.ResolveDefaultSchema();
+        var databaseType = self.GetDatabaseType();
 
-        var setClause = string.Join(", ", setValues.Select(kv => $"{kv.Key} = {FormatSqlValue(kv.Value)}"));
-        var whereClause = string.Join(" AND ", keyValues.Select(kv => FormatSqlPredicate(kv.Key, kv.Value)));
+        var setClause = string.Join(", ", setValues.Select(kv => $"{QuoteIdent(databaseType, kv.Key)} = {FormatSqlValue(kv.Value, databaseType)}"));
+        var whereClause = string.Join(" AND ", keyValues.Select(kv => FormatSqlPredicate(databaseType, kv.Key, kv.Value)));
 
-        self.Execute.Sql($"UPDATE {QualifyTable(schemaName, tableName)} SET {setClause} WHERE {whereClause};");
+        self.Execute.Sql($"UPDATE {QualifyTable(databaseType, schemaName, tableName)} SET {setClause} WHERE {whereClause};");
     }
 
     /// <summary>
@@ -1028,10 +1120,11 @@ END;");
             throw new ArgumentException("At least one key column is required.", nameof(keyValues));
 
         schemaName ??= self.ResolveDefaultSchema();
+        var databaseType = self.GetDatabaseType();
 
-        var whereClause = string.Join(" AND ", keyValues.Select(kv => FormatSqlPredicate(kv.Key, kv.Value)));
+        var whereClause = string.Join(" AND ", keyValues.Select(kv => FormatSqlPredicate(databaseType, kv.Key, kv.Value)));
 
-        self.Execute.Sql($"DELETE FROM {QualifyTable(schemaName, tableName)} WHERE {whereClause};");
+        self.Execute.Sql($"DELETE FROM {QualifyTable(databaseType, schemaName, tableName)} WHERE {whereClause};");
     }
 
     /// <summary>
@@ -1042,8 +1135,12 @@ END;");
     /// Uses a portable <c>INSERT ... SELECT ... WHERE NOT EXISTS (...)</c> statement that runs unmodified on
     /// SQL Server, PostgreSQL, MySQL and SQLite — no per-provider branching needed. Values are formatted as SQL
     /// literals (strings are quote-escaped; <c>null</c> key values use <c>IS NULL</c> so they still match;
-    /// booleans become <c>1</c>/<c>0</c>; <see cref="Guid"/> is quoted; enums use their underlying numeric value);
-    /// table and column identifiers are not quoted, so avoid reserved words.
+    /// booleans become <c>TRUE</c>/<c>FALSE</c> on PostgreSQL and <c>1</c>/<c>0</c> elsewhere;
+    /// <see cref="Guid"/> is quoted; enums use their underlying numeric value).
+    /// Only whitelisted value types are accepted — anything else throws instead of being embedded blindly.
+    /// Note: concurrent writers can both pass the <c>NOT EXISTS</c> check and collide on a unique
+    /// constraint — like every check-then-act in this library, this is idempotent under retries,
+    /// not under racing transactions.
     /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Target table name.</param>
@@ -1062,8 +1159,18 @@ END;");
             throw new ArgumentException("At least one key column is required.", nameof(keyValues));
 
         schemaName ??= self.ResolveDefaultSchema();
+        var databaseType = self.GetDatabaseType();
 
-        var qualifiedTable = QualifyTable(schemaName, tableName);
+        if (additionalValues is not null)
+        {
+            var overlap = additionalValues.Keys.Intersect(keyValues.Keys, StringComparer.OrdinalIgnoreCase).ToList();
+            if (overlap.Count > 0)
+                throw new ArgumentException(
+                    $"additionalValues must not redefine key columns: {string.Join(", ", overlap)}.",
+                    nameof(additionalValues));
+        }
+
+        var qualifiedTable = QualifyTable(databaseType, schemaName, tableName);
 
         var values = new Dictionary<string, object?>();
         foreach (var kv in keyValues)
@@ -1073,15 +1180,16 @@ END;");
                 values[kv.Key] = kv.Value;
 
         var columns = values.Keys.ToList();
-        var selectList = string.Join(", ", columns.Select(c => FormatSqlValue(values[c])));
-        var whereClause = string.Join(" AND ", keyValues.Select(kv => FormatSqlPredicate(kv.Key, kv.Value)));
+        var columnList = string.Join(", ", columns.Select(c => QuoteIdent(databaseType, c)));
+        var selectList = string.Join(", ", columns.Select(c => FormatSqlValue(values[c], databaseType)));
+        var whereClause = string.Join(" AND ", keyValues.Select(kv => FormatSqlPredicate(databaseType, kv.Key, kv.Value)));
 
         // Oracle has no FROM-less SELECT — every SELECT needs a source, hence FROM DUAL.
-        var fromDual = self.GetDatabaseType().IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0
+        var fromDual = databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0
             ? " FROM DUAL"
             : "";
 
-        self.Execute.Sql($@"INSERT INTO {qualifiedTable} ({string.Join(", ", columns)})
+        self.Execute.Sql($@"INSERT INTO {qualifiedTable} ({columnList})
 SELECT {selectList}{fromDual}
 WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
     }
@@ -1127,12 +1235,17 @@ WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
         var databaseType = self.GetDatabaseType();
         var isOracle = databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0;
 
+        if (isOracle && restartWith.HasValue)
+            throw new ArgumentException(
+                "restartWith is not supported on Oracle — pass startWith instead (it also restarts the sequence there).",
+                nameof(restartWith));
+
         var clauses = new List<string>();
         if (incrementBy.HasValue) clauses.Add($"INCREMENT BY {incrementBy.Value}");
         if (minValue.HasValue) clauses.Add($"MINVALUE {minValue.Value}");
         if (maxValue.HasValue) clauses.Add($"MAXVALUE {maxValue.Value}");
         if (startWith.HasValue) clauses.Add($"START WITH {startWith.Value}");
-        if (restartWith.HasValue && !isOracle) clauses.Add($"RESTART WITH {restartWith.Value}");
+        if (restartWith.HasValue) clauses.Add($"RESTART WITH {restartWith.Value}");
         if (cache.HasValue)
             clauses.Add(cache.Value > 0
                 ? $"CACHE {cache.Value}"
@@ -1145,7 +1258,9 @@ WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
         if (clauses.Count == 0)
             return;
 
-        self.Execute.Sql($"ALTER SEQUENCE {QualifyTable(schemaName, sequenceName)} {string.Join(" ", clauses)};");
+        // No trailing semicolon on Oracle direct DDL (ORA-00911).
+        var terminator = isOracle ? "" : ";";
+        self.Execute.Sql($"ALTER SEQUENCE {QualifyTable(databaseType, schemaName, sequenceName)} {string.Join(" ", clauses)}{terminator}");
     }
 
     /// <summary>
@@ -1178,6 +1293,10 @@ WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
     /// PostgreSQL, MySQL, and SQLite require a UNIQUE constraint (or PRIMARY KEY) on the key columns for
     /// conflict detection to work. If no such constraint exists, the statement will fail — ensure a unique
     /// index or constraint covers the key columns before calling this method.
+    /// Key values must be non-null (null never matches in a conflict check). On MySQL the row-alias
+    /// form is used (<c>AS new ... = new.col</c>), which requires MySQL 8.0.19+; MariaDB keeps the
+    /// legacy <c>VALUES(col)</c> form. On SQL Server the target is taken <c>WITH (HOLDLOCK)</c> to
+    /// close the check-then-act race between concurrent runners.
     /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Target table name.</param>
@@ -1194,6 +1313,11 @@ WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
     {
         if (keyValues.Count == 0)
             throw new ArgumentException("At least one key column is required.", nameof(keyValues));
+        if (keyValues.Any(kv => kv.Value is null))
+            throw new ArgumentException(
+                "Upsert key values must be non-null: NULL never matches in a conflict/ON clause, " +
+                "so a null key would re-insert instead of updating.",
+                nameof(keyValues));
 
         schemaName ??= self.ResolveDefaultSchema();
 
@@ -1204,68 +1328,93 @@ WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
             foreach (var kv in additionalValues)
                 allValues[kv.Key] = kv.Value;
 
-        var qualifiedTable = QualifyTable(schemaName, tableName);
-        var columns = allValues.Keys.ToList();
-        var columnList = string.Join(", ", columns);
-        var valueList = string.Join(", ", columns.Select(c => FormatSqlValue(allValues[c])));
         var databaseType = self.GetDatabaseType();
+        var qualifiedTable = QualifyTable(databaseType, schemaName, tableName);
+        var columns = allValues.Keys.ToList();
+        var columnList = string.Join(", ", columns.Select(c => QuoteIdent(databaseType, c)));
+        var valueList = string.Join(", ", columns.Select(c => FormatSqlValue(allValues[c], databaseType)));
+        var hasUpdates = additionalValues is not null && additionalValues.Count > 0;
 
         if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            var onClause = string.Join(" AND ", keyValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"));
-            var sourceColumns = string.Join(", ", columns.Select(c => $"{FormatSqlValue(allValues[c])} AS {c}"));
-            var updateSet = additionalValues is not null && additionalValues.Count > 0
-                ? string.Join(", ", additionalValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"))
-                : string.Join(", ", keyValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"));
-            var insertColumns = string.Join(", ", columns);
-            var insertValues = string.Join(", ", columns.Select(c => $"source.{c}"));
+            // HOLDLOCK: without it two concurrent runners can both pass the match check
+            // and hit a duplicate-key error (the well-known MERGE race).
+            var onClause = string.Join(" AND ", keyValues.Select(kv => $"target.{QuoteIdent(databaseType, kv.Key)} = source.{QuoteIdent(databaseType, kv.Key)}"));
+            // A bare NULL has no type in a derived table ("type cannot be determined") — cast it.
+            var sourceColumns = string.Join(", ", columns.Select(c => allValues[c] is null
+                ? $"CAST(NULL AS NVARCHAR(MAX)) AS {QuoteIdent(databaseType, c)}"
+                : $"{FormatSqlValue(allValues[c], databaseType)} AS {QuoteIdent(databaseType, c)}"));
+            var matchedClause = hasUpdates
+                ? $"WHEN MATCHED THEN UPDATE SET {string.Join(", ", additionalValues!.Select(kv => $"target.{QuoteIdent(databaseType, kv.Key)} = source.{QuoteIdent(databaseType, kv.Key)}"))}\n"
+                : "";
+            var insertColumns = string.Join(", ", columns.Select(c => QuoteIdent(databaseType, c)));
+            var insertValues = string.Join(", ", columns.Select(c => $"source.{QuoteIdent(databaseType, c)}"));
 
-            self.Execute.Sql($@"MERGE {qualifiedTable} AS target
+            self.Execute.Sql($@"MERGE {qualifiedTable} WITH (HOLDLOCK) AS target
 USING (SELECT {sourceColumns}) AS source
 ON ({onClause})
-WHEN MATCHED THEN UPDATE SET {updateSet}
-WHEN NOT MATCHED THEN INSERT ({insertColumns}) VALUES ({insertValues});");
+{matchedClause}WHEN NOT MATCHED THEN INSERT ({insertColumns}) VALUES ({insertValues});");
             return;
         }
 
         if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            var onClause = string.Join(" AND ", keyValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"));
-            var sourceColumns = string.Join(", ", columns.Select(c => $"{FormatSqlValue(allValues[c])} AS {c}"));
-            var updateSet = additionalValues is not null && additionalValues.Count > 0
-                ? string.Join(", ", additionalValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"))
-                : string.Join(", ", keyValues.Select(kv => $"target.{kv.Key} = source.{kv.Key}"));
-            var insertColumns = string.Join(", ", columns.Select(c => $"target.{c}"));
-            var insertValues = string.Join(", ", columns.Select(c => $"source.{c}"));
+            var onClause = string.Join(" AND ", keyValues.Select(kv => $"target.{QuoteIdent(databaseType, kv.Key)} = source.{QuoteIdent(databaseType, kv.Key)}"));
+            var sourceColumns = string.Join(", ", columns.Select(c => allValues[c] is null
+                ? $"CAST(NULL AS VARCHAR2(4000)) AS {QuoteIdent(databaseType, c)}"
+                : $"{FormatSqlValue(allValues[c], databaseType)} AS {QuoteIdent(databaseType, c)}"));
+            var matchedClause = hasUpdates
+                ? $"WHEN MATCHED THEN UPDATE SET {string.Join(", ", additionalValues!.Select(kv => $"target.{QuoteIdent(databaseType, kv.Key)} = source.{QuoteIdent(databaseType, kv.Key)}"))}\n"
+                : "";
+            // No trailing semicolon: this statement is sent as direct SQL (ORA-00911),
+            // unlike the PL/SQL blocks elsewhere which require their own terminators.
+            var insertColumns = string.Join(", ", columns.Select(c => $"target.{QuoteIdent(databaseType, c)}"));
+            var insertValues = string.Join(", ", columns.Select(c => $"source.{QuoteIdent(databaseType, c)}"));
 
             self.Execute.Sql($@"MERGE INTO {qualifiedTable} target
 USING (SELECT {sourceColumns} FROM DUAL) source
 ON ({onClause})
-WHEN MATCHED THEN UPDATE SET {updateSet}
-WHEN NOT MATCHED THEN INSERT ({insertColumns}) VALUES ({insertValues});");
+{matchedClause}WHEN NOT MATCHED THEN INSERT ({insertColumns}) VALUES ({insertValues})");
             return;
         }
 
         if (databaseType.IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0 ||
             databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            var updateSet = additionalValues is not null && additionalValues.Count > 0
-                ? string.Join(", ", additionalValues.Select(kv => $"{kv.Key} = VALUES({kv.Key})"))
-                : string.Join(", ", keyValues.Select(kv => $"{kv.Key} = VALUES({kv.Key})"));
+            var isMariaDb = databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0;
+            string updateSet;
+            string prefix;
+            if (hasUpdates)
+            {
+                // VALUES(col) is deprecated since MySQL 8.0.20 — the row-alias form needs 8.0.19+.
+                // MariaDB never deprecated VALUES(), so it stays there for maximum server compatibility.
+                updateSet = isMariaDb
+                    ? string.Join(", ", additionalValues!.Select(kv => $"{QuoteIdent(databaseType, kv.Key)} = VALUES({QuoteIdent(databaseType, kv.Key)})"))
+                    : string.Join(", ", additionalValues!.Select(kv => $"{QuoteIdent(databaseType, kv.Key)} = new.{QuoteIdent(databaseType, kv.Key)}"));
+                prefix = isMariaDb ? "" : "AS new ";
+            }
+            else
+            {
+                // ON DUPLICATE KEY UPDATE requires at least one assignment — self-assign the keys (a no-op).
+                updateSet = isMariaDb
+                    ? string.Join(", ", keyValues.Select(kv => $"{QuoteIdent(databaseType, kv.Key)} = VALUES({QuoteIdent(databaseType, kv.Key)})"))
+                    : string.Join(", ", keyValues.Select(kv => $"{QuoteIdent(databaseType, kv.Key)} = new.{QuoteIdent(databaseType, kv.Key)}"));
+                prefix = isMariaDb ? "" : "AS new ";
+            }
 
             self.Execute.Sql($@"INSERT INTO {qualifiedTable} ({columnList}) VALUES ({valueList})
-ON DUPLICATE KEY UPDATE {updateSet};");
+{prefix}ON DUPLICATE KEY UPDATE {updateSet};");
             return;
         }
 
-        // PostgreSQL / SQLite: ON CONFLICT ... DO UPDATE
-        var keyColumnList = string.Join(", ", keyValues.Keys);
-        var conflictUpdateSet = additionalValues is not null && additionalValues.Count > 0
-            ? string.Join(", ", additionalValues.Select(kv => $"{kv.Key} = EXCLUDED.{kv.Key}"))
-            : string.Join(", ", keyValues.Select(kv => $"{kv.Key} = EXCLUDED.{kv.Key}"));
+        // PostgreSQL / SQLite: ON CONFLICT ... DO UPDATE (or DO NOTHING for key-only upserts).
+        var keyColumnList = string.Join(", ", keyValues.Keys.Select(k => QuoteIdent(databaseType, k)));
+        var conflictClause = hasUpdates
+            ? $"DO UPDATE SET {string.Join(", ", additionalValues!.Select(kv => $"{QuoteIdent(databaseType, kv.Key)} = EXCLUDED.{QuoteIdent(databaseType, kv.Key)}"))}"
+            : "DO NOTHING";
 
         self.Execute.Sql($@"INSERT INTO {qualifiedTable} ({columnList}) VALUES ({valueList})
-ON CONFLICT ({keyColumnList}) DO UPDATE SET {conflictUpdateSet};");
+ON CONFLICT ({keyColumnList}) {conflictClause};");
     }
 
     /// <summary>
@@ -1273,8 +1422,12 @@ ON CONFLICT ({keyColumnList}) DO UPDATE SET {conflictUpdateSet};");
     /// An escape hatch for idempotent operations not covered by the specialized methods.
     /// </summary>
     /// <remarks>
-    /// Supported on SQL Server (<c>IF EXISTS ... EXEC</c>), PostgreSQL (<c>DO $$ ... END $$</c>),
+    /// Supported on SQL Server (<c>IF EXISTS ... EXEC sp_executesql</c>), PostgreSQL (<c>DO $fm_idempotent$ ... END</c>),
     /// and Oracle (<c>DECLARE ... EXECUTE IMMEDIATE</c>). Not supported on MySQL or SQLite.
+    /// Both statements are executed verbatim — trusted developer input only, never end-user input.
+    /// <paramref name="conditionSql"/> must be a single <c>SELECT</c> without a trailing semicolon
+    /// (multi-statement input is rejected); <paramref name="executeSql"/> must not contain the
+    /// <c>$fm_idempotent$</c> dollar-quote tag.
     /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="conditionSql">A <c>SELECT</c> statement; if it returns any rows, <paramref name="executeSql"/> runs.</param>
@@ -1284,23 +1437,29 @@ ON CONFLICT ({keyColumnList}) DO UPDATE SET {conflictUpdateSet};");
         string conditionSql,
         string executeSql)
     {
+        const string pgTag = "$fm_idempotent$";
         var databaseType = self.GetDatabaseType();
+
+        if (conditionSql.Contains(';'))
+            throw new ArgumentException("conditionSql must be a single SELECT statement without semicolons.", nameof(conditionSql));
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0 && executeSql.Contains(pgTag))
+            throw new ArgumentException($"executeSql must not contain the '{pgTag}' dollar-quote tag.", nameof(executeSql));
 
         if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             self.Execute.Sql($@"IF EXISTS ({conditionSql})
-    EXEC('{executeSql.Replace("'", "''")}');");
+    EXEC sp_executesql N'{executeSql.Replace("'", "''")}';");
             return;
         }
 
         if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($@"DO $$
+            self.Execute.Sql($@"DO {pgTag}
 BEGIN
     IF EXISTS ({conditionSql}) THEN
         EXECUTE '{executeSql.Replace("'", "''")}';
     END IF;
-END $$;");
+END {pgTag};");
             return;
         }
 
@@ -1325,6 +1484,9 @@ END;");
     /// Executes <paramref name="executeSql"/> only if <paramref name="conditionSql"/> returns no rows.
     /// An escape hatch for idempotent operations not covered by the specialized methods.
     /// </summary>
+    /// <remarks>
+    /// Same provider support and trusted-input contract as <see cref="ExecuteSqlIfExists"/>.
+    /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="conditionSql">A <c>SELECT</c> statement; if it returns no rows, <paramref name="executeSql"/> runs.</param>
     /// <param name="executeSql">The SQL statement to execute when the condition is not met.</param>
@@ -1333,23 +1495,29 @@ END;");
         string conditionSql,
         string executeSql)
     {
+        const string pgTag = "$fm_idempotent$";
         var databaseType = self.GetDatabaseType();
+
+        if (conditionSql.Contains(';'))
+            throw new ArgumentException("conditionSql must be a single SELECT statement without semicolons.", nameof(conditionSql));
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0 && executeSql.Contains(pgTag))
+            throw new ArgumentException($"executeSql must not contain the '{pgTag}' dollar-quote tag.", nameof(executeSql));
 
         if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             self.Execute.Sql($@"IF NOT EXISTS ({conditionSql})
-    EXEC('{executeSql.Replace("'", "''")}');");
+    EXEC sp_executesql N'{executeSql.Replace("'", "''")}';");
             return;
         }
 
         if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($@"DO $$
+            self.Execute.Sql($@"DO {pgTag}
 BEGIN
     IF NOT EXISTS ({conditionSql}) THEN
         EXECUTE '{executeSql.Replace("'", "''")}';
     END IF;
-END $$;");
+END {pgTag};");
             return;
         }
 
@@ -1381,53 +1549,60 @@ END;");
     /// a PL/SQL loop (<c>ALTER INDEX ... REBUILD</c>, plain rebuild so it works on every edition).
     /// The table is passed as a parameter — nothing is hardcoded. If the table does not exist the
     /// statement fails server-side (no silent skip).
+    /// On PostgreSQL this takes an <c>ACCESS EXCLUSIVE</c> lock — do NOT run it on every deploy
+    /// against a busy table; schedule it in a maintenance window or pass <c>concurrently: true</c>
+    /// (PostgreSQL 12+, slower but lock-friendly).
     /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Table whose indexes should be reorganized.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    /// <param name="concurrently">PostgreSQL only: use <c>REINDEX TABLE CONCURRENTLY</c>. Ignored elsewhere.</param>
     public static void ReorganizeIndexes(
         this Migration self,
         string tableName,
-        string? schemaName = null)
+        string? schemaName = null,
+        bool concurrently = false)
     {
         schemaName ??= self.ResolveDefaultSchema();
         var databaseType = self.GetDatabaseType();
 
         if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"ALTER INDEX ALL ON [{schemaName}].[{tableName}] REORGANIZE;");
+            self.Execute.Sql($"ALTER INDEX ALL ON [{EscapeBracket(schemaName)}].[{EscapeBracket(tableName)}] REORGANIZE;");
             return;
         }
 
         if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"REINDEX TABLE {QualifyTable(schemaName, tableName)};");
+            var keyword = concurrently ? "REINDEX TABLE CONCURRENTLY" : "REINDEX TABLE";
+            self.Execute.Sql($"{keyword} {QualifyTable(databaseType, schemaName, tableName)};");
             return;
         }
 
         if (databaseType.IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0 ||
             databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"OPTIMIZE TABLE {QualifyTable(schemaName, tableName)};");
+            self.Execute.Sql($"OPTIMIZE TABLE {QualifyTable(databaseType, schemaName, tableName)};");
             return;
         }
 
         if (databaseType.IndexOf("SQLite", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"REINDEX {tableName};");
+            self.Execute.Sql($"REINDEX {QuoteIdent(databaseType, tableName)};");
             return;
         }
 
         if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             // Oracle has no "reorganize all indexes on a table" statement: loop over the table's
-            // indexes and rebuild each one. Unquoted identifiers are stored uppercase, hence UPPER().
+            // indexes and rebuild each one. Unquoted identifiers are stored uppercase, but quoted
+            // (case-sensitive) names are stored as-is — match either.
             var escapedTable = tableName.Replace("'", "''");
             var escapedSchema = schemaName.Replace("'", "''");
 
             var indexCursor = string.IsNullOrEmpty(schemaName)
-                ? $"SELECT index_name FROM user_indexes WHERE table_name = UPPER('{escapedTable}')"
-                : $"SELECT owner, index_name FROM all_indexes WHERE table_name = UPPER('{escapedTable}') AND owner = UPPER('{escapedSchema}')";
+                ? $"SELECT index_name FROM user_indexes WHERE table_name IN ('{escapedTable}', UPPER('{escapedTable}'))"
+                : $"SELECT owner, index_name FROM all_indexes WHERE table_name IN ('{escapedTable}', UPPER('{escapedTable}')) AND owner IN ('{escapedSchema}', UPPER('{escapedSchema}'))";
 
             var rebuildSql = string.IsNullOrEmpty(schemaName)
                 ? "'ALTER INDEX \"' || idx.index_name || '\" REBUILD'"
@@ -1480,26 +1655,26 @@ END;");
         if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             var sampleClause = samplePercent.HasValue ? $" WITH SAMPLE {samplePercent.Value} PERCENT" : "";
-            self.Execute.Sql($"UPDATE STATISTICS [{schemaName}].[{tableName}]{sampleClause};");
+            self.Execute.Sql($"UPDATE STATISTICS [{EscapeBracket(schemaName)}].[{EscapeBracket(tableName)}]{sampleClause};");
             return;
         }
 
         if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"ANALYZE {QualifyTable(schemaName, tableName)};");
+            self.Execute.Sql($"ANALYZE {QualifyTable(databaseType, schemaName, tableName)};");
             return;
         }
 
         if (databaseType.IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0 ||
             databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"ANALYZE TABLE {QualifyTable(schemaName, tableName)};");
+            self.Execute.Sql($"ANALYZE TABLE {QualifyTable(databaseType, schemaName, tableName)};");
             return;
         }
 
         if (databaseType.IndexOf("SQLite", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            self.Execute.Sql($"ANALYZE {tableName};");
+            self.Execute.Sql($"ANALYZE {QuoteIdent(databaseType, tableName)};");
             return;
         }
 
@@ -1508,37 +1683,159 @@ END;");
             var estimate = samplePercent.HasValue
                 ? samplePercent.Value.ToString(CultureInfo.InvariantCulture)
                 : "DBMS_STATS.AUTO_SAMPLE_SIZE";
-            var owner = string.IsNullOrEmpty(schemaName) ? "USER" : $"UPPER('{schemaName.Replace("'", "''")}')";
             var escapedTable = tableName.Replace("'", "''");
 
-            self.Execute.Sql($@"
+            // Resolve the real stored names first: unquoted identifiers live uppercase in the
+            // dictionary, quoted (case-sensitive) ones as-is. GATHER_TABLE_STATS needs exact names.
+            string statsSql;
+            if (string.IsNullOrEmpty(schemaName))
+            {
+                statsSql = $@"
+DECLARE
+    v_tab VARCHAR2(128);
 BEGIN
-    DBMS_STATS.GATHER_TABLE_STATS(ownname => {owner}, tabname => UPPER('{escapedTable}'), estimate_percent => {estimate});
-END;");
+    BEGIN
+        SELECT table_name INTO v_tab FROM (
+            SELECT table_name FROM user_tables WHERE table_name IN ('{escapedTable}', UPPER('{escapedTable}'))
+            UNION ALL
+            SELECT table_name FROM all_tables WHERE table_name IN ('{escapedTable}', UPPER('{escapedTable}')) AND owner = USER AND ROWNUM = 1)
+        WHERE ROWNUM = 1;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            RAISE_APPLICATION_ERROR(-20001, 'UpdateStatistics: table ''{escapedTable}'' not found');
+    END;
+    DBMS_STATS.GATHER_TABLE_STATS(ownname => USER, tabname => v_tab, estimate_percent => {estimate});
+END;";
+            }
+            else
+            {
+                var escapedSchema = schemaName.Replace("'", "''");
+                statsSql = $@"
+DECLARE
+    v_owner VARCHAR2(128);
+    v_tab VARCHAR2(128);
+BEGIN
+    BEGIN
+        SELECT username INTO v_owner FROM all_users WHERE username IN ('{escapedSchema}', UPPER('{escapedSchema}')) AND ROWNUM = 1;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            RAISE_APPLICATION_ERROR(-20001, 'UpdateStatistics: schema ''{escapedSchema}'' not found');
+    END;
+    BEGIN
+        SELECT table_name INTO v_tab FROM (
+            SELECT table_name FROM all_tables WHERE table_name IN ('{escapedTable}', UPPER('{escapedTable}')) AND owner = v_owner AND ROWNUM = 1)
+        WHERE ROWNUM = 1;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            RAISE_APPLICATION_ERROR(-20001, 'UpdateStatistics: table ''{escapedSchema}.{escapedTable}'' not found');
+    END;
+    DBMS_STATS.GATHER_TABLE_STATS(ownname => v_owner, tabname => v_tab, estimate_percent => {estimate});
+END;";
+            }
+
+            self.Execute.Sql(statsSql);
             return;
         }
 
         throw new NotSupportedException($"UpdateStatistics is not supported on {databaseType}.");
     }
 
-    private static string QualifyTable(string schemaName, string tableName)
-        => string.IsNullOrEmpty(schemaName) ? tableName : $"{schemaName}.{tableName}";
+    private static string EscapeLiteral(string value) => value.Replace("'", "''");
 
-    private static string FormatSqlPredicate(string column, object? value)
-        => value is null ? $"{column} IS NULL" : $"{column} = {FormatSqlValue(value)}";
+    private static string EscapeBracket(string value) => value.Replace("]", "]]");
 
-    private static string FormatSqlValue(object? value)
+    private static string EscapeDoubleQuote(string value) => value.Replace("\"", "\"\"");
+
+    /// <summary>
+    /// Quotes a single identifier for the current provider: <c>[x]</c> on SQL Server
+    /// (with <c>]</c> escaped as <c>]]</c>), backticks on MySQL/MariaDB, double quotes
+    /// everywhere else (PostgreSQL, SQLite, Oracle).
+    /// </summary>
+    /// <remarks>
+    /// Quoted identifiers are case-sensitive, while FluentMigrator itself emits them unquoted —
+    /// so on engines that fold unquoted names the value is folded first to resolve exactly like
+    /// the old unquoted SQL did: <c>UPPER</c> on Oracle (which stores everything uppercase),
+    /// <c>lower</c> on PostgreSQL (which stores everything lowercase). SQL Server, MySQL and
+    /// SQLite compare case-insensitively (or store as-given on both sides), so no folding there.
+    /// </remarks>
+    private static string QuoteIdent(string databaseType, string name)
     {
-        return value switch
+        if (databaseType.IndexOf("SqlServer", StringComparison.OrdinalIgnoreCase) >= 0)
+            return $"[{EscapeBracket(name)}]";
+        if (databaseType.IndexOf("MySql", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            databaseType.IndexOf("MariaDb", StringComparison.OrdinalIgnoreCase) >= 0)
+            return $"`{name.Replace("`", "``")}`";
+        if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+            return $"\"{EscapeDoubleQuote(name.ToUpperInvariant())}\"";
+        if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+            return $"\"{EscapeDoubleQuote(name.ToLowerInvariant())}\"";
+        return $"\"{EscapeDoubleQuote(name)}\"";
+    }
+
+    private static string QualifyTable(string databaseType, string schemaName, string tableName)
+        => string.IsNullOrEmpty(schemaName)
+            ? QuoteIdent(databaseType, tableName)
+            : $"{QuoteIdent(databaseType, schemaName)}.{QuoteIdent(databaseType, tableName)}";
+
+    private static string FormatSqlPredicate(string databaseType, string column, object? value)
+        => value is null
+            ? $"{QuoteIdent(databaseType, column)} IS NULL"
+            : $"{QuoteIdent(databaseType, column)} = {FormatSqlValue(value, databaseType)}";
+
+    /// <summary>
+    /// Formats a value as a SQL literal. Only whitelisted CLR types are supported — anything else
+    /// throws <see cref="NotSupportedException"/> instead of silently embedding
+    /// <c>ToString()</c> output (which would allow arbitrary text, e.g. from a custom type,
+    /// to flow unquoted into SQL).
+    /// </summary>
+    private static string FormatSqlValue(object? value, string databaseType)
+    {
+        switch (value)
         {
-            null => "NULL",
-            string s => $"'{s.Replace("'", "''")}'",
-            bool b => b ? "1" : "0",
-            DateTime dt => $"'{dt:yyyy-MM-dd HH:mm:ss}'",
-            Guid g => $"'{g}'",
-            Enum e => Convert.ToInt64(e, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture),
-            _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? "NULL"
-        };
+            case null:
+                return "NULL";
+            case string s:
+                return $"'{EscapeLiteral(s)}'";
+            case char ch:
+                return $"'{EscapeLiteral(ch.ToString())}'";
+            case bool b:
+                // PostgreSQL has a real boolean type — 1/0 is a syntax error there.
+                if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return b ? "TRUE" : "FALSE";
+                return b ? "1" : "0";
+            case DateTime dt:
+                return $"'{dt:yyyy-MM-dd HH:mm:ss.fff}'";
+            case DateTimeOffset dto:
+                return $"'{dto:yyyy-MM-dd HH:mm:ss.fff zzz}'";
+            case Guid g:
+                return $"'{g}'";
+            case Enum e:
+                return Convert.ToInt64(e, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture);
+            case byte _:
+            case sbyte _:
+            case short _:
+            case ushort _:
+            case int _:
+            case uint _:
+            case long _:
+            case ulong _:
+            case float _:
+            case double _:
+            case decimal _:
+                return Convert.ToString(value, CultureInfo.InvariantCulture) ?? "NULL";
+            case byte[] bytes:
+                var hex = BitConverter.ToString(bytes).Replace("-", string.Empty);
+                if (databaseType.IndexOf("Postgres", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return $"'\\x{hex}'";
+                if (databaseType.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return $"HEXTORAW('{hex}')";
+                return $"0x{hex}";
+            default:
+                throw new NotSupportedException(
+                    $"Values of type '{value.GetType().FullName}' are not supported as SQL literals. " +
+                    "Supported types: string, char, bool, DateTime, DateTimeOffset, Guid, enums, " +
+                    "numeric types and byte[].");
+        }
     }
 
     /// <summary>
@@ -1588,11 +1885,26 @@ END;");
 
     private static Dictionary<string, object?> ObjectToDictionary(object obj)
         => obj.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
-              .ToDictionary(p => p.Name, p => p.GetValue(obj));
+              .Where(p => p.GetIndexParameters().Length == 0)
+              .ToDictionary<PropertyInfo, string, object?>(p => p.Name, p => p.GetValue(obj));
 
     private static Dictionary<string, object> ObjectToNonNullDictionary(object obj)
-        => obj.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
-              .ToDictionary(p => p.Name, p => p.GetValue(obj)!);
+    {
+        var result = new Dictionary<string, object>();
+        foreach (var prop in obj.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (prop.GetIndexParameters().Length > 0)
+                continue;
+            var value = prop.GetValue(obj);
+            if (value is null)
+                throw new ArgumentException(
+                    $"Property '{prop.Name}' is null, but upsert key values must be non-null.",
+                    nameof(obj));
+            result[prop.Name] = value;
+        }
+
+        return result;
+    }
 
     /// <inheritdoc cref="InsertDataIfNotExists(Migration, string, IReadOnlyDictionary{string, object?}, IReadOnlyDictionary{string, object?}?, string?)"/>
     public static void InsertDataIfNotExists(

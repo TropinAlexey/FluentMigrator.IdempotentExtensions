@@ -27,30 +27,33 @@ public static class SqlServerExtensions
         string columnName,
         string schemaName = "dbo")
     {
+        var escSchema = schemaName.Replace("]", "]]");
+        var escTable = tableName.Replace("]", "]]");
+        var escColumn = columnName.Replace("'", "''");
         self.Execute.Sql($@"
 IF EXISTS (
     SELECT 1
     FROM sys.default_constraints dc
     JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
-    WHERE dc.parent_object_id = OBJECT_ID(N'[{schemaName}].[{tableName}]')
-      AND c.name = N'{columnName}'
+    WHERE dc.parent_object_id = OBJECT_ID(N'[{escSchema}].[{escTable}]')
+      AND c.name = N'{escColumn}'
 )
 BEGIN
     DECLARE @constraintName SYSNAME;
-    DECLARE @sql NVARCHAR(500);
+    DECLARE @sql NVARCHAR(MAX);
 
     DECLARE cur CURSOR LOCAL FAST_FORWARD FOR
         SELECT dc.name
         FROM sys.default_constraints dc
         JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
-        WHERE dc.parent_object_id = OBJECT_ID(N'[{schemaName}].[{tableName}]')
-          AND c.name = N'{columnName}';
+        WHERE dc.parent_object_id = OBJECT_ID(N'[{escSchema}].[{escTable}]')
+          AND c.name = N'{escColumn}';
 
     OPEN cur;
     FETCH NEXT FROM cur INTO @constraintName;
     WHILE @@FETCH_STATUS = 0
     BEGIN
-        SET @sql = N'ALTER TABLE [{schemaName}].[{tableName}] DROP CONSTRAINT [' + @constraintName + N']';
+        SET @sql = N'ALTER TABLE [{escSchema}].[{escTable}] DROP CONSTRAINT ' + QUOTENAME(@constraintName);
         EXEC sp_executesql @sql;
         FETCH NEXT FROM cur INTO @constraintName;
     END;

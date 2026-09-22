@@ -5,7 +5,6 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <PackageId>TropinAlexey.FluentMigrator.IdempotentExtensions</PackageId>
-    <Version>1.7.0</Version>
     <Authors>TropinAlexey</Authors>
     <Description>Idempotent extension methods for FluentMigrator migrations. CreateTableIfNotExists, CreateForeignKeyIfNotExists, CreateSequenceIfNotExists, InsertDataIfNotExists, and more — safe to run multiple times on any database.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -13,19 +12,23 @@
     <RepositoryUrl>https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>FluentMigrator;migrations;database;idempotent;extensions</PackageTags>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReadmeFile>README.nuget.md</PackageReadmeFile>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <NuGetAudit>true</NuGetAudit>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="\"/>
+    <None Include="..\..\README.nuget.md" Pack="true" PackagePath="\"/>
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="FluentMigrator" Version="8.0.1" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
   </ItemGroup>
 
 </Project>

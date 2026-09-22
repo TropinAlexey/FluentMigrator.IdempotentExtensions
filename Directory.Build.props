@@ -1,0 +1,7 @@
+<Project>
+  <!-- Single source of truth for the lockstep package version (ADR-0001):
+       both shippable packages always share one version, bumped together. -->
+  <PropertyGroup>
+    <Version>1.7.2</Version>
+  </PropertyGroup>
+</Project>

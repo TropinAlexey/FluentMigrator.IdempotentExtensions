@@ -334,10 +334,11 @@ Renames a table only if the source table exists. No-op if `oldName` is not found
 void CreateLogTableIfNotExists(
     this Migration self,
     string tableName,
-    string? schemaName = null)
+    string? schemaName = null,
+    string? logTableName = null)
 ```
 
-Creates `{tableName}_log` with standard audit columns: `id`, `timestamp`, `username`, `action`, `record_id`.
+Creates `{tableName}_log` with standard audit columns: `id`, `timestamp`, `username`, `action`, `record_id`. Pass `logTableName` to override the default name.
 
 </details>
 
@@ -417,10 +418,11 @@ IFluentSyntax? CreateIndexIfNotExists(
     string tableName,
     string columnName,
     Func<ICreateIndexColumnOptionsSyntax, IFluentSyntax> configureIndex,
-    string? schemaName = null)
+    string? schemaName = null,
+    string? indexName = null)
 ```
 
-Creates an index named `index_{columnName}` if it does not already exist.
+Creates an index named `index_{columnName}` if it does not already exist. Pass `indexName` to override the default (needed when indexing the same column on several tables — e.g. PostgreSQL requires index names to be unique per schema).
 
 #### `CreateCompositeIndexIfNotExists()`
 
@@ -563,7 +565,17 @@ Renames a constraint if it exists. **SQL Server, PostgreSQL, and Oracle.**
 
 #### `AddColumnDefaultIfExists()`
 
-Sets a column's default value if the column exists (a no-op otherwise). **Not supported on SQLite.**
+```csharp
+void AddColumnDefaultIfExists(
+    this Migration self,
+    string tableName,
+    string columnName,
+    object? defaultValue,
+    string? schemaName = null,
+    string? constraintName = null)
+```
+
+Sets a column's default value if the column exists (a no-op otherwise). **Not supported on SQLite.** On SQL Server the constraint is named `DF_{tableName}_{columnName}` unless `constraintName` is given.
 
 #### `DropColumnDefaultIfExists()`
 
@@ -665,7 +677,7 @@ Drops a sequence if it exists. **Not supported on MySQL/MariaDB or SQLite.**
 
 #### `InsertDataIfNotExists()`
 
-Inserts a row only if no row matching `keyValues` already exists. Uses a single portable `INSERT ... SELECT ... WHERE NOT EXISTS (...)` statement. Handles `null` (`IS NULL`), `Guid`, `bool` (→ `1`/`0`), and `enum` (→ numeric) values.
+Inserts a row only if no row matching `keyValues` already exists. Uses a single portable `INSERT ... SELECT ... WHERE NOT EXISTS (...)` statement. Handles `null` (`IS NULL`), `Guid`, `bool` (→ `TRUE`/`FALSE` on PostgreSQL, `1`/`0` elsewhere), and `enum` (→ numeric) values.
 
 All data methods accept both **anonymous objects** (recommended) and `IReadOnlyDictionary<string, object?>`:
 
@@ -901,9 +913,19 @@ Drops the `DEFAULT` constraint on a column by locating it via `sys.default_const
 ## What's New
 
 <details>
-<summary><b>v1.7.1</b> — Version alignment (no code changes)</summary>
+<summary><b>v1.7.2</b> — SQL hardening + packaging security (no new methods)</summary>
 
-- SqlServer package aligned to `1.7.0` with zero code changes, per [ADR-0001](docs/adr/0001-synchronized-package-versions.md): both packages now share one version, bumped together on every release. This also refreshes the core DLL embedded in the SqlServer package.
+- **Security:** all identifiers in raw SQL are now quoted per provider (`[x]` / `` `x` `` / `"x"`) with escaping (Oracle folds to `UPPER`, PostgreSQL to `lower` — exactly how unquoted names resolved before, so no behavior change); T-SQL `OBJECT_ID`/`sp_rename` inputs are literal-escaped; `QUOTENAME()` for discovered constraint names; `NVARCHAR(MAX)`; `EXEC sp_executesql N'...'` instead of `EXEC('...')`; PostgreSQL `DO $fm_idempotent$` tag; raw-SQL parameters documented as trusted-developer-input-only.
+- **Correctness:** `CreateTableIfNotExists` now honors `schemaName`; `DropPrimaryKeyIfExists` uses `Delete.PrimaryKey`; `DropViewIfExists` works on Oracle; booleans emit `TRUE`/`FALSE` on PostgreSQL; `byte[]`/`DateTimeOffset` literals supported, unknown value types throw instead of embedding `ToString()`; `UpsertData` rejects null keys, casts typeless `NULL`s in `MERGE`, uses `HOLDLOCK` on SQL Server, `DO NOTHING` on PostgreSQL/SQLite for key-only upserts, and the non-deprecated `AS new` form on MySQL 8.0.19+; `InsertDataIfNotExists` rejects key/additional overlap; `AlterSequenceIfExists(restartWith:)` on Oracle throws instead of silently skipping.
+- **Behavior changes vs 1.7.1:** none in defaults — all fixes are backward compatible. New optional overrides: `indexName` on `CreateIndexIfNotExists` (pass it when indexing the same column on several tables), `constraintName` on `AddColumnDefaultIfExists` (SQL Server), `logTableName` on `CreateLogTableIfNotExists`. Empty `additionalValues` upsert is `DO NOTHING` on PostgreSQL/SQLite (was a pointless self-update); `conditionSql` with `;` is rejected (it never executed server-side anyway); non-empty `schemaName` on SQLite `CreateViewIfNotExists` throws instead of silently targeting the wrong schema.
+- **Packaging:** single lockstep version in `Directory.Build.props`; SourceLink enabled; NuGet Trusted Publishing (OIDC) in the release workflow; Dependabot for actions + NuGet.
+</details>
+
+<details>
+<summary><b>v1.7.1</b> — Version alignment + NuGet README fix (no code changes)</summary>
+
+- SqlServer package aligned to `1.7.1` with zero code changes, per [ADR-0001](docs/adr/0001-synchronized-package-versions.md): both packages now share one version, bumped together on every release. This also refreshes the core DLL embedded in the SqlServer package.
+- Packaging: NuGet now ships `README.nuget.md` (pure Markdown, no raw HTML) instead of the GitHub `README.md`, so the package page renders cleanly. GitHub README is unchanged.
 </details>
 
 <details>
