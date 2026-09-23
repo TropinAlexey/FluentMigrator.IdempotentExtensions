@@ -32,7 +32,7 @@ public static partial class IdempotentExtensions
             ? value.Replace("\\", "\\\\").Replace("'", "''")
             : EscapeLiteral(value);
 
-    private static string EscapeBracket(string value) => value.Replace("]", "]]");
+    private static string EscapeBracket(string value) => value.Replace("]", "]]" );
 
     private static string EscapeDoubleQuote(string value) => value.Replace("\"", "\"\"");
 
@@ -232,10 +232,10 @@ public static partial class IdempotentExtensions
     private static Dictionary<string, object> ObjectToNonNullDictionary(object obj)
     {
         var result = new Dictionary<string, object>();
-        foreach (var prop in obj.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        foreach (var prop in obj.GetType()
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(prop => prop.GetIndexParameters().Length == 0))
         {
-            if (prop.GetIndexParameters().Length > 0)
-                continue;
             var value = prop.GetValue(obj);
             if (value is null)
                 throw new ArgumentException(
