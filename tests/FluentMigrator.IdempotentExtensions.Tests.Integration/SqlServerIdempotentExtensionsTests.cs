@@ -7,7 +7,7 @@ namespace FluentMigrator.IdempotentExtensions.Tests.Integration;
 
 public sealed class SqlServerIdempotentExtensionsTests : IdempotentExtensionsIntegrationTestsBase
 {
-    private readonly MsSqlContainer _container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:latest").Build();
+    private readonly MsSqlContainer _container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-latest").Build();
 
     protected override async Task<string> StartContainerAsync()
     {

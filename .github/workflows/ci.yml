@@ -14,10 +14,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v6
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: '10.x'
 
@@ -25,6 +25,9 @@ jobs:
         run: dotnet restore
 
       - name: Audit dependencies
+        # Advisory only: dotnet list exits 0 even with vulnerabilities.
+        # Hard gating is done by NuGetAudit for all projects via Directory.Build.props
+        # (NU1901-NU1905 as errors, transitive included).
         run: dotnet list package --vulnerable --include-transitive
 
       - name: Build
@@ -37,10 +40,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v6
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: '10.x'
 

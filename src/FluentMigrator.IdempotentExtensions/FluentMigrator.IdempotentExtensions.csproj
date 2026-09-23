@@ -1,7 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <!-- netstandard2.0 keeps the broadest consumer compatibility; net8.0 lights up
+         DateOnly/TimeOnly literal support (those types don't exist on netstandard2.0).
+         Behavior for every previously accepted input is identical on both targets. -->
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <PackageId>TropinAlexey.FluentMigrator.IdempotentExtensions</PackageId>
@@ -18,7 +21,6 @@
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <NuGetAudit>true</NuGetAudit>
   </PropertyGroup>
 
   <ItemGroup>
