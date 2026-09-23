@@ -7,7 +7,7 @@ namespace FluentMigrator.IdempotentExtensions.Tests.Integration;
 
 public sealed class PostgresIdempotentExtensionsTests : IdempotentExtensionsIntegrationTestsBase
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:latest").Build();
+    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17").Build();
 
     protected override async Task<string> StartContainerAsync()
     {

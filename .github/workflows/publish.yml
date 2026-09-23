@@ -7,7 +7,8 @@ on:
 
 permissions:
   contents: read
-  id-token: write  # required for OIDC trusted publishing
+  # NOTE: no id-token:write — OIDC trusted publishing is not configured (see TODO below).
+  # Re-add it if NuGet/login via OIDC is ever re-enabled.
 
 jobs:
   publish:
@@ -15,10 +16,10 @@ jobs:
     environment: nuget-publish
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v6
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: '10.x'
 
@@ -48,3 +49,22 @@ jobs:
 
       - name: Push to NuGet
         run: dotnet nuget push nupkg/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      # --skip-duplicate above swallows "already exists" silently, which once masked
+      # a release that pushed nothing (v1.7.1). Fail loudly if a package is missing.
+      - name: Verify packages on NuGet.org
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for PKG in tropinalexey.fluentmigrator.idempotentextensions tropinalexey.fluentmigrator.idempotentextensions.sqlserver; do
+            for i in $(seq 1 30); do
+              if curl -s "https://api.nuget.org/v3-flatcontainer/$PKG/index.json" | grep -q "\"$VERSION\""; then
+                echo "$PKG $VERSION found on NuGet.org"
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "::error::$PKG $VERSION NOT found on NuGet.org after push"
+                exit 1
+              fi
+              sleep 20
+            done
+          done

@@ -10,7 +10,7 @@ public sealed class MySqlIdempotentExtensionsTests : IdempotentExtensionsIntegra
     // --log-bin-trust-function-creators: the official MySQL image enables binary logging by default, which
     // then requires SUPER privilege to CREATE TRIGGER/FUNCTION unless this is set — without it, trigger tests
     // fail with "You do not have the SUPER privilege and binary logging is enabled".
-    private readonly MySqlContainer _container = new MySqlBuilder("mysql:latest")
+    private readonly MySqlContainer _container = new MySqlBuilder("mysql:8.0")
         .WithCommand("--log-bin-trust-function-creators=1")
         .Build();
 

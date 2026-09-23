@@ -4,4 +4,15 @@
   <PropertyGroup>
     <Version>1.7.2</Version>
   </PropertyGroup>
+
+  <!-- Dependency vulnerability gating for every project in the repo (src and tests):
+       - NuGetAudit fails restore on direct vulnerable references (NU1901-NU1905 as errors).
+       - NuGetAuditMode=all extends the audit to transitive packages.
+       NU1900 (could not reach a package source, e.g. offline restore) is deliberately
+       NOT an error so local/offline builds keep working. -->
+  <PropertyGroup>
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <WarningsAsErrors>$(WarningsAsErrors);NU1901;NU1902;NU1903;NU1904;NU1905</WarningsAsErrors>
+  </PropertyGroup>
 </Project>

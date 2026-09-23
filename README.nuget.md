@@ -11,23 +11,23 @@
 
 ## Why
 
-Regular FluentMigrator migrations assume every database starts from the same known state and are applied exactly once, in order. In practice, databases drift: manual hotfixes, partially-applied migrations, or independently evolved instances end up with different schemas.
+Regular FluentMigrator migrations assume every database starts from the same known state and are applied exactly once, in order. In practice, databases drift: manual hotfixes, partially applied migrations, or independently evolved instances end up with different schemas.
 
 Idempotent extensions let you write a migration that **checks what already exists** and **only applies what's missing** — so you can run it against any divergent database and converge them all to the same target schema.
 
 ## Supported databases
 
-| | SQL Server | PostgreSQL | MySQL | SQLite | Oracle |
-|---|:---:|:---:|:---:|:---:|:---:|
-| **40+ methods** | Yes | Yes | Yes | Yes | Yes |
-| **Testcontainers tests** | Yes | Yes | Yes | — | Yes |
+|                          | SQL Server | PostgreSQL | MySQL | SQLite | Oracle |
+|--------------------------|:----------:|:----------:|:-----:|:------:|:------:|
+| **40+ methods**          |    Yes     |    Yes     |  Yes  |  Yes   |  Yes   |
+| **Testcontainers tests** |    Yes     |    Yes     |  Yes  |   —    |  Yes   |
 
 ## Packages
 
-| Package | Description |
-|---------|-------------|
-| [TropinAlexey.FluentMigrator.IdempotentExtensions](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions/) | DB-agnostic helpers (SQL Server, PostgreSQL, MySQL, SQLite, Oracle) |
-| [TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer/) | SQL Server / Azure SQL specific helpers |
+| Package                                                                                                                                                  | Description                                                         |
+|----------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|
+| [TropinAlexey.FluentMigrator.IdempotentExtensions](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions/)                     | DB-agnostic helpers (SQL Server, PostgreSQL, MySQL, SQLite, Oracle) |
+| [TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer](https://www.nuget.org/packages/TropinAlexey.FluentMigrator.IdempotentExtensions.SqlServer/) | SQL Server / Azure SQL specific helpers                             |
 
 ## Installation
 
