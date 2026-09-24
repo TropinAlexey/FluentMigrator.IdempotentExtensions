@@ -21,7 +21,7 @@ public sealed class IdempotentExtensionsTests : IDisposable
 
     public IdempotentExtensionsTests()
     {
-        _dbPath = Path.Combine(Path.GetTempPath(), $"fm_test_{Guid.NewGuid():N}.db");
+        _dbPath = Path.Join(Path.GetTempPath(), $"fm_test_{Guid.NewGuid():N}.db");
         _connectionString = $"Data Source={_dbPath}";
 
         _services = new ServiceCollection()
