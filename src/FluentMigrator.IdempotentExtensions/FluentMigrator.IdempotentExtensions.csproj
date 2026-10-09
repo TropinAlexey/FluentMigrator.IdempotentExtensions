@@ -21,6 +21,9 @@
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <!-- Ship XML docs so consumers get IntelliSense; doc warnings (bad cref/param) fail the build. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <WarningsAsErrors>$(WarningsAsErrors);CS0419;CS1572;CS1573;CS1574;CS1591</WarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
