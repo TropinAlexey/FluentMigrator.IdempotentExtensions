@@ -17,6 +17,28 @@ using FluentMigrator.Infrastructure;
 /// </summary>
 public static partial class IdempotentExtensions
 {
+    /// <summary>
+    /// Reorganizes/defragments all indexes on <paramref name="tableName"/>. Pure maintenance — no
+    /// schema changes — so re-applying the migration that contains it is always safe.
+    /// </summary>
+    /// <remarks>
+    /// Note that FluentMigrator runs each migration version once: the statement below executes
+    /// when the migration is applied, not on every deploy. To run maintenance periodically,
+    /// create a new migration version each time (or invoke these helpers outside migrations).
+    /// Provider mapping: SQL Server runs <c>ALTER INDEX ALL ... REORGANIZE</c>; PostgreSQL runs
+    /// <c>REINDEX TABLE</c>; MySQL/MariaDB runs <c>OPTIMIZE TABLE</c> (which also refreshes index
+    /// statistics); SQLite runs <c>REINDEX table</c>; Oracle rebuilds each of the table's indexes via
+    /// a PL/SQL loop (<c>ALTER INDEX ... REBUILD</c>, plain rebuild so it works on every edition).
+    /// The table is passed as a parameter — nothing is hardcoded. If the table does not exist the
+    /// statement fails server-side (no silent skip).
+    /// On PostgreSQL this takes an <c>ACCESS EXCLUSIVE</c> lock — do NOT run it on every deploy
+    /// against a busy table; schedule it in a maintenance window or pass <c>concurrently: true</c>
+    /// (PostgreSQL 12+, slower but lock-friendly).
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Table whose indexes should be reorganized.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    /// <param name="concurrently">PostgreSQL only: use <c>REINDEX TABLE CONCURRENTLY</c>. Ignored elsewhere.</param>
     public static void ReorganizeIndexes(
         this Migration self,
         string tableName,
@@ -201,5 +223,4 @@ END;";
 
         throw new NotSupportedException($"UpdateStatistics is not supported on {databaseTypeName}.");
     }
-
 }

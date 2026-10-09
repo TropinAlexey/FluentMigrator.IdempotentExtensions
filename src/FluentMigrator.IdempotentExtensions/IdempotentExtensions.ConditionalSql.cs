@@ -17,6 +17,23 @@ using FluentMigrator.Infrastructure;
 /// </summary>
 public static partial class IdempotentExtensions
 {
+    /// <summary>
+    /// Executes <paramref name="executeSql"/> only if <paramref name="conditionSql"/> returns at least one row.
+    /// An escape hatch for idempotent operations not covered by the specialized methods.
+    /// </summary>
+    /// <remarks>
+    /// Supported on SQL Server (<c>IF EXISTS ... EXEC sp_executesql</c>), PostgreSQL (<c>DO $fm_idempotent$ ... END</c>),
+    /// and Oracle (<c>DECLARE ... EXECUTE IMMEDIATE</c>). Not supported on MySQL or SQLite.
+    /// Both statements are executed verbatim — trusted developer input only, never end-user input.
+    /// The single-statement check on <paramref name="conditionSql"/> is a guard rail, not a security
+    /// boundary (<paramref name="executeSql"/> is not validated at all) — treat both as code.
+    /// <paramref name="conditionSql"/> must be a single <c>SELECT</c> without a trailing semicolon
+    /// (multi-statement input is rejected); <paramref name="executeSql"/> must not contain the
+    /// <c>$fm_idempotent$</c> dollar-quote tag.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="conditionSql">A <c>SELECT</c> statement; if it returns any rows, <paramref name="executeSql"/> runs.</param>
+    /// <param name="executeSql">The SQL statement to execute when the condition is met.</param>
     public static void ExecuteSqlIfExists(
         this Migration self,
         string conditionSql,
@@ -124,27 +141,4 @@ END;");
 
         throw new NotSupportedException($"ExecuteSqlIfNotExists is not supported on {databaseTypeName}.");
     }
-
-    /// <summary>
-    /// Reorganizes/defragments all indexes on <paramref name="tableName"/>. Pure maintenance — no
-    /// schema changes — so re-applying the migration that contains it is always safe.
-    /// </summary>
-    /// <remarks>
-    /// Note that FluentMigrator runs each migration version once: the statement below executes
-    /// when the migration is applied, not on every deploy. To run maintenance periodically,
-    /// create a new migration version each time (or invoke these helpers outside migrations).
-    /// Provider mapping: SQL Server runs <c>ALTER INDEX ALL ... REORGANIZE</c>; PostgreSQL runs
-    /// <c>REINDEX TABLE</c>; MySQL/MariaDB runs <c>OPTIMIZE TABLE</c> (which also refreshes index
-    /// statistics); SQLite runs <c>REINDEX table</c>; Oracle rebuilds each of the table's indexes via
-    /// a PL/SQL loop (<c>ALTER INDEX ... REBUILD</c>, plain rebuild so it works on every edition).
-    /// The table is passed as a parameter — nothing is hardcoded. If the table does not exist the
-    /// statement fails server-side (no silent skip).
-    /// On PostgreSQL this takes an <c>ACCESS EXCLUSIVE</c> lock — do NOT run it on every deploy
-    /// against a busy table; schedule it in a maintenance window or pass <c>concurrently: true</c>
-    /// (PostgreSQL 12+, slower but lock-friendly).
-    /// </remarks>
-    /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Table whose indexes should be reorganized.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
-    /// <param name="concurrently">PostgreSQL only: use <c>REINDEX TABLE CONCURRENTLY</c>. Ignored elsewhere.</param>
 }

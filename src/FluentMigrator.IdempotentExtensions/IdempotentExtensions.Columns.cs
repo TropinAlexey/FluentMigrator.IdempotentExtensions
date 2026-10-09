@@ -17,6 +17,18 @@ using FluentMigrator.Infrastructure;
 /// </summary>
 public static partial class IdempotentExtensions
 {
+    /// <summary>
+    /// Adds a column to <paramref name="tableName"/> only if it does not already exist.
+    /// Returns <c>null</c> if the column already exists or the table does not exist.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="colName">Name of the column to add.</param>
+    /// <param name="constructCol">Fluent builder callback that defines the column type and constraints.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
+    /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
+    /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
+    /// <returns>The fluent syntax result, or <c>null</c> if the column already existed or the table does not exist.</returns>
     public static IFluentSyntax? CreateColumnIfNotExists(
         this Migration self,
         string tableName,
@@ -167,16 +179,15 @@ END");
     }
 
     /// <summary>
-    /// Creates an audit log table if it does not already exist.
-    /// The table includes: <c>id</c>, <c>timestamp</c>, <c>username</c>, <c>action</c>, <c>record_id</c>.
-    /// The default log table name is <c>{tableName}_log</c>; supply <paramref name="logTableName"/> to override.
+    /// Renames <paramref name="oldName"/> column to <paramref name="newName"/> if the source column exists.
     /// </summary>
     /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Base table name; the log table will be named <c>{tableName}_log</c> unless overridden.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="oldName">Current column name.</param>
+    /// <param name="newName">New column name.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
     /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
     /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
-    /// <param name="logTableName">Explicit log table name. Defaults to <c>{tableName}_log</c> if omitted.</param>
     public static void RenameColumnIfExists(
         this Migration self,
         string tableName,
@@ -191,11 +202,24 @@ END");
     }
 
     /// <summary>
-    /// Creates <paramref name="schemaName"/> if it does not already exist.
-    /// Not supported on SQLite.
+    /// Sets a default value on <paramref name="columnName"/> if the column exists; a no-op if it does not.
+    /// Companion to <see cref="DropColumnDefaultIfExists"/>. Not supported on SQLite (no <c>ALTER COLUMN</c>).
     /// </summary>
+    /// <remarks>
+    /// On PostgreSQL and MySQL, <c>ALTER COLUMN ... SET DEFAULT</c> simply overwrites any existing default, so
+    /// it is executed directly. On SQL Server, DEFAULT constraints must be explicitly named and cannot coexist
+    /// with an existing one on the same column, so the existing default is checked for first via
+    /// <c>sys.default_constraints</c>.
+    /// </remarks>
     /// <param name="self">The migration instance.</param>
-    /// <param name="schemaName">Schema to create.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="columnName">Column to set the default value on.</param>
+    /// <param name="defaultValue">The default value. Formatted as a SQL literal the same way as
+    /// <see cref="InsertDataIfNotExists(Migration, string, IReadOnlyDictionary{string, object?}, IReadOnlyDictionary{string, object?}?, string?)"/> values.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    /// <param name="constraintName">SQL Server only: explicit name for the created DEFAULT constraint.
+    /// Defaults to <c>DF_{tableName}_{columnName}</c> if omitted. Ignored on other providers
+    /// (their defaults are unnamed).</param>
     public static void AddColumnDefaultIfExists(
         this Migration self,
         string tableName,
@@ -238,18 +262,4 @@ IF NOT EXISTS (
 
         self.Execute.Sql($"ALTER TABLE {QualifyTable(provider, schemaName, tableName)} ALTER COLUMN {QuoteIdent(provider, columnName)} SET DEFAULT {formattedValue};");
     }
-
-    /// <summary>
-    /// Creates <paramref name="viewName"/> if it does not already exist.
-    /// </summary>
-    /// <remarks>
-    /// On PostgreSQL and MySQL, uses <c>CREATE OR REPLACE VIEW</c>, so re-running with the same
-    /// <paramref name="selectSql"/> is a harmless no-op (the view is simply redefined identically).
-    /// On SQLite, uses the native <c>CREATE VIEW IF NOT EXISTS</c>. On SQL Server, which supports neither,
-    /// the existence check is done via <c>sys.views</c> and the view is created via dynamic SQL.
-    /// </remarks>
-    /// <param name="self">The migration instance.</param>
-    /// <param name="viewName">Name of the view to create.</param>
-    /// <param name="selectSql">The view's <c>SELECT</c> statement, without the <c>CREATE VIEW ... AS</c> prefix. Executed verbatim — trusted developer input only.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider. Ignored on SQLite (which has no schemas) — passing a non-empty value throws.</param>
 }

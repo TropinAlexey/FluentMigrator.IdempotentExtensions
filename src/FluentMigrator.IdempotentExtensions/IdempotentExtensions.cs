@@ -27,15 +27,4 @@ public static partial class IdempotentExtensions
         return tableWithColumnSyntax
             .WithColumn("id").AsInt32().NotNullable().PrimaryKey().Identity();
     }
-
-    /// <summary>
-    /// Creates a table only if it does not already exist in the specified schema.
-    /// </summary>
-    /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Name of the table to create.</param>
-    /// <param name="constructTable">Fluent builder delegate that defines columns and constraints.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
-    /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
-    /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
-    /// <returns>The fluent syntax result, or <c>null</c> if the table already exists.</returns>
 }
