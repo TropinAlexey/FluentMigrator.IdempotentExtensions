@@ -17,6 +17,16 @@ using FluentMigrator.Infrastructure;
 /// </summary>
 public static partial class IdempotentExtensions
 {
+    /// <summary>
+    /// Creates a table only if it does not already exist in the specified schema.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Name of the table to create.</param>
+    /// <param name="constructTable">Fluent builder delegate that defines columns and constraints.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
+    /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
+    /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
+    /// <returns>The fluent syntax result, or <c>null</c> if the table already exists.</returns>
     public static IFluentSyntax? CreateTableIfNotExists(
         this Migration self,
         string tableName,
@@ -39,17 +49,16 @@ public static partial class IdempotentExtensions
     }
 
     /// <summary>
-    /// Adds a column to <paramref name="tableName"/> only if it does not already exist.
-    /// Returns <c>null</c> if the column already exists or the table does not exist.
+    /// Creates an audit log table if it does not already exist.
+    /// The table includes: <c>id</c>, <c>timestamp</c>, <c>username</c>, <c>action</c>, <c>record_id</c>.
+    /// The default log table name is <c>{tableName}_log</c>; supply <paramref name="logTableName"/> to override.
     /// </summary>
     /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Target table name.</param>
-    /// <param name="colName">Name of the column to add.</param>
-    /// <param name="constructCol">Fluent builder callback that defines the column type and constraints.</param>
+    /// <param name="tableName">Base table name; the log table will be named <c>{tableName}_log</c> unless overridden.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
     /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
     /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
-    /// <returns>The fluent syntax result, or <c>null</c> if the column already existed or the table does not exist.</returns>
+    /// <param name="logTableName">Explicit log table name. Defaults to <c>{tableName}_log</c> if omitted.</param>
     public static void CreateLogTableIfNotExists(
         this Migration self,
         string tableName,
@@ -71,23 +80,13 @@ public static partial class IdempotentExtensions
     }
 
     /// <summary>
-    /// Creates an index on <paramref name="columnName"/> if it does not already exist.
-    /// The default index name is <c>index_{columnName}</c>; supply <paramref name="indexName"/> to override.
+    /// Drops <paramref name="tableName"/> if it exists.
     /// </summary>
-    /// <remarks>
-    /// The default name does not include the table, so indexing the same column name on two tables
-    /// with defaults collides (and PostgreSQL requires index names to be unique per schema, so the
-    /// second <c>CREATE INDEX</c> would fail outright) — pass an explicit <paramref name="indexName"/>
-    /// in that case. The default is kept for backward compatibility.
-    /// </remarks>
     /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Target table name.</param>
-    /// <param name="columnName">Column to index.</param>
-    /// <param name="configureIndex">Callback to configure ascending/descending and uniqueness.</param>
+    /// <param name="tableName">Name of the table to drop.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
     /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
     /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
-    /// <param name="indexName">Explicit index name. Defaults to <c>index_{columnName}</c> if omitted.</param>
     public static void DropTableIfExists(
         this Migration self,
         string tableName,
@@ -119,16 +118,4 @@ public static partial class IdempotentExtensions
         if (self.TableExists(oldName, schemaName))
             self.Rename.Table(oldName).InSchema(schemaName).To(newName);
     }
-
-    /// <summary>
-    /// Creates a named UNIQUE constraint on <paramref name="columns"/> if it does not already exist.
-    /// Works on all databases supported by FluentMigrator.
-    /// </summary>
-    /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Target table name.</param>
-    /// <param name="constraintName">Name of the unique constraint to create.</param>
-    /// <param name="columns">Columns included in the constraint.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
-    /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
-    /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
 }

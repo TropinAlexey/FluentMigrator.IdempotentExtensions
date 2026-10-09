@@ -17,6 +17,22 @@ using FluentMigrator.Infrastructure;
 /// </summary>
 public static partial class IdempotentExtensions
 {
+    /// <summary>
+    /// Drops a named UNIQUE or CHECK constraint from <paramref name="tableName"/> if it exists.
+    /// Works on all databases supported by FluentMigrator.
+    /// For default constraints use <see cref="DropColumnDefaultIfExists"/>.
+    /// </summary>
+    /// <remarks>
+    /// This issues a generic <c>DROP CONSTRAINT</c>, which covers UNIQUE and CHECK constraints on
+    /// every provider. For foreign keys prefer <see cref="DropForeignKeyIfExists"/>, for primary
+    /// keys prefer <see cref="DropPrimaryKeyIfExists"/>.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="constraintName">Name of the constraint to drop.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
+    /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
+    /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
     public static void DropConstraintIfExists(
         this Migration self,
         string tableName,
@@ -92,10 +108,13 @@ public static partial class IdempotentExtensions
     }
 
     /// <summary>
-    /// Drops <paramref name="tableName"/> if it exists.
+    /// Creates a named UNIQUE constraint on <paramref name="columns"/> if it does not already exist.
+    /// Works on all databases supported by FluentMigrator.
     /// </summary>
     /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Name of the table to drop.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="constraintName">Name of the unique constraint to create.</param>
+    /// <param name="columns">Columns included in the constraint.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
     /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
     /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
@@ -169,15 +188,21 @@ public static partial class IdempotentExtensions
     }
 
     /// <summary>
-    /// Renames <paramref name="oldName"/> column to <paramref name="newName"/> if the source column exists.
+    /// Adds a named CHECK constraint on <paramref name="tableName"/> if it does not already exist.
+    /// Not supported on SQLite (its <c>ALTER TABLE</c> cannot add constraints to an existing table).
     /// </summary>
+    /// <remarks>
+    /// To drop a check constraint, reuse <see cref="DropConstraintIfExists"/> — it issues a generic
+    /// <c>DROP CONSTRAINT</c>, which SQL Server, PostgreSQL, and MySQL (8.0.19+) all accept for CHECK constraints.
+    /// The <paramref name="checkSql"/> expression is executed verbatim — trusted developer input only,
+    /// never end-user input.
+    /// </remarks>
     /// <param name="self">The migration instance.</param>
     /// <param name="tableName">Target table name.</param>
-    /// <param name="oldName">Current column name.</param>
-    /// <param name="newName">New column name.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
-    /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
-    /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
+    /// <param name="constraintName">Name of the CHECK constraint to create.</param>
+    /// <param name="checkSql">The boolean SQL expression to check, without the surrounding parentheses
+    /// (e.g. <c>"age &gt;= 0"</c>).</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
     public static void CreateCheckConstraintIfNotExists(
         this Migration self,
         string tableName,
@@ -197,24 +222,16 @@ public static partial class IdempotentExtensions
     }
 
     /// <summary>
-    /// Sets a default value on <paramref name="columnName"/> if the column exists; a no-op if it does not.
-    /// Companion to <see cref="DropColumnDefaultIfExists"/>. Not supported on SQLite (no <c>ALTER COLUMN</c>).
+    /// Renames the constraint <paramref name="oldName"/> to <paramref name="newName"/> on
+    /// <paramref name="tableName"/> if it exists. Only supported on SQL Server, PostgreSQL and Oracle —
+    /// MySQL/MariaDB has no general-purpose constraint rename (only <c>RENAME INDEX</c>, see
+    /// <see cref="RenameIndexIfExists"/>), and SQLite has no rename-constraint DDL at all.
     /// </summary>
-    /// <remarks>
-    /// On PostgreSQL and MySQL, <c>ALTER COLUMN ... SET DEFAULT</c> simply overwrites any existing default, so
-    /// it is executed directly. On SQL Server, DEFAULT constraints must be explicitly named and cannot coexist
-    /// with an existing one on the same column, so the existing default is checked for first via
-    /// <c>sys.default_constraints</c>.
-    /// </remarks>
     /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Target table name.</param>
-    /// <param name="columnName">Column to set the default value on.</param>
-    /// <param name="defaultValue">The default value. Formatted as a SQL literal the same way as
-    /// <see cref="InsertDataIfNotExists"/> values.</param>
+    /// <param name="tableName">Table the constraint is defined on.</param>
+    /// <param name="oldName">Current constraint name.</param>
+    /// <param name="newName">New constraint name.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
-    /// <param name="constraintName">SQL Server only: explicit name for the created DEFAULT constraint.
-    /// Defaults to <c>DF_{tableName}_{columnName}</c> if omitted. Ignored on other providers
-    /// (their defaults are unnamed).</param>
     public static void RenameConstraintIfExists(
         this Migration self,
         string tableName,
@@ -254,21 +271,4 @@ public static partial class IdempotentExtensions
 
         throw new NotSupportedException("RenameConstraintIfExists is only supported on SQL Server, PostgreSQL and Oracle.");
     }
-
-    /// <summary>
-    /// Updates rows in <paramref name="tableName"/> matching <paramref name="keyValues"/> with
-    /// <paramref name="setValues"/>. Naturally idempotent — an <c>UPDATE</c> that matches zero rows (because
-    /// they were already updated, or don't exist) is a safe no-op on every provider, so no existence guard
-    /// is needed.
-    /// </summary>
-    /// <remarks>
-    /// Uses the same portable value formatting as <see cref="InsertDataIfNotExists"/> (strings quote-escaped,
-    /// <c>null</c> compared with <c>IS NULL</c>, <see cref="Guid"/> quoted, enums as their numeric value).
-    /// Only whitelisted value types are accepted — anything else throws instead of being embedded blindly.
-    /// </remarks>
-    /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Target table name.</param>
-    /// <param name="keyValues">Column/value pairs identifying which rows to update. Must contain at least one entry.</param>
-    /// <param name="setValues">Column/value pairs to set on the matched rows. Must contain at least one entry.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
 }

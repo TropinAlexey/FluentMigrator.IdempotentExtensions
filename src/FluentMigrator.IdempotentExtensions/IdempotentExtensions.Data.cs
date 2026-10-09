@@ -17,6 +17,22 @@ using FluentMigrator.Infrastructure;
 /// </summary>
 public static partial class IdempotentExtensions
 {
+    /// <summary>
+    /// Updates rows in <paramref name="tableName"/> matching <paramref name="keyValues"/> with
+    /// <paramref name="setValues"/>. Naturally idempotent — an <c>UPDATE</c> that matches zero rows (because
+    /// they were already updated, or don't exist) is a safe no-op on every provider, so no existence guard
+    /// is needed.
+    /// </summary>
+    /// <remarks>
+    /// Uses the same portable value formatting as <see cref="InsertDataIfNotExists(Migration, string, IReadOnlyDictionary{string, object?}, IReadOnlyDictionary{string, object?}?, string?)"/> (strings quote-escaped,
+    /// <c>null</c> compared with <c>IS NULL</c>, <see cref="Guid"/> quoted, enums as their numeric value).
+    /// Only whitelisted value types are accepted — anything else throws instead of being embedded blindly.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="keyValues">Column/value pairs identifying which rows to update. Must contain at least one entry.</param>
+    /// <param name="setValues">Column/value pairs to set on the matched rows. Must contain at least one entry.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
     public static void UpdateDataIfExists(
         this Migration self,
         string tableName,
@@ -132,25 +148,26 @@ WHERE NOT EXISTS (SELECT 1 FROM {qualifiedTable} WHERE {whereClause});");
     }
 
     /// <summary>
-    /// Alters <paramref name="sequenceName"/> if it already exists; no-op otherwise.
-    /// Not supported on MySQL/MariaDB or SQLite.
+    /// Inserts a row if no row matching <paramref name="keyValues"/> exists; otherwise updates the matching
+    /// row with <paramref name="additionalValues"/>. Uses provider-specific MERGE/upsert syntax:
+    /// <c>MERGE</c> on SQL Server and Oracle, <c>INSERT ... ON CONFLICT ... DO UPDATE</c> on PostgreSQL,
+    /// <c>INSERT ... ON DUPLICATE KEY UPDATE</c> on MySQL, and <c>INSERT ... ON CONFLICT ... DO UPDATE</c>
+    /// on SQLite.
     /// </summary>
     /// <remarks>
-    /// FluentMigrator has no <c>Alter.Sequence</c> API, so this builds and executes a raw
-    /// <c>ALTER SEQUENCE</c> statement from the supplied parameters. At least one parameter
-    /// must be non-null. Provider differences are handled internally — e.g. Oracle uses
-    /// <c>START WITH</c> instead of <c>RESTART WITH</c>, and <c>NOCYCLE</c>/<c>NOCACHE</c>
-    /// instead of <c>NO CYCLE</c>/<c>NO CACHE</c>.
+    /// PostgreSQL, MySQL, and SQLite require a UNIQUE constraint (or PRIMARY KEY) on the key columns for
+    /// conflict detection to work. If no such constraint exists, the statement will fail — ensure a unique
+    /// index or constraint covers the key columns before calling this method.
+    /// Key values must be non-null (null never matches in a conflict check). On MySQL the row-alias
+    /// form is used (<c>AS new ... = new.col</c>), which requires MySQL 8.0.19+; MariaDB keeps the
+    /// legacy <c>VALUES(col)</c> form. On SQL Server the target is taken <c>WITH (HOLDLOCK)</c> to
+    /// close the check-then-act race between concurrent runners.
     /// </remarks>
     /// <param name="self">The migration instance.</param>
-    /// <param name="sequenceName">Name of the sequence to alter.</param>
-    /// <param name="incrementBy">New increment value.</param>
-    /// <param name="minValue">New minimum value.</param>
-    /// <param name="maxValue">New maximum value.</param>
-    /// <param name="restartWith">Restart the sequence at this value. Not supported on Oracle (use <paramref name="startWith"/> instead).</param>
-    /// <param name="startWith">Set the start value. On Oracle, also restarts the sequence.</param>
-    /// <param name="cache">Number of values to cache. Pass <c>0</c> to disable caching.</param>
-    /// <param name="cycle">Whether the sequence should cycle when it reaches its limit.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="keyValues">Column/value pairs that uniquely identify the row. Must have at least one entry.
+    /// Values are non-nullable — upsert conflict detection requires non-null keys on all providers.</param>
+    /// <param name="additionalValues">Column/value pairs to insert alongside keys / update on conflict. May be empty or null for key-only rows.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
     public static void UpsertData(
         this Migration self,
@@ -264,23 +281,7 @@ ON ({onClause})
 ON CONFLICT ({keyColumnList}) {conflictClause};");
     }
 
-    /// <summary>
-    /// Executes <paramref name="executeSql"/> only if <paramref name="conditionSql"/> returns at least one row.
-    /// An escape hatch for idempotent operations not covered by the specialized methods.
-    /// </summary>
-    /// <remarks>
-    /// Supported on SQL Server (<c>IF EXISTS ... EXEC sp_executesql</c>), PostgreSQL (<c>DO $fm_idempotent$ ... END</c>),
-    /// and Oracle (<c>DECLARE ... EXECUTE IMMEDIATE</c>). Not supported on MySQL or SQLite.
-    /// Both statements are executed verbatim — trusted developer input only, never end-user input.
-    /// The single-statement check on <paramref name="conditionSql"/> is a guard rail, not a security
-    /// boundary (<paramref name="executeSql"/> is not validated at all) — treat both as code.
-    /// <paramref name="conditionSql"/> must be a single <c>SELECT</c> without a trailing semicolon
-    /// (multi-statement input is rejected); <paramref name="executeSql"/> must not contain the
-    /// <c>$fm_idempotent$</c> dollar-quote tag.
-    /// </remarks>
-    /// <param name="self">The migration instance.</param>
-    /// <param name="conditionSql">A <c>SELECT</c> statement; if it returns any rows, <paramref name="executeSql"/> runs.</param>
-    /// <param name="executeSql">The SQL statement to execute when the condition is met.</param>
+    /// <inheritdoc cref="InsertDataIfNotExists(Migration, string, IReadOnlyDictionary{string, object?}, IReadOnlyDictionary{string, object?}?, string?)"/>
     public static void InsertDataIfNotExists(
         this Migration self,
         string tableName,
