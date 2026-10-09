@@ -17,6 +17,15 @@ using FluentMigrator.Infrastructure;
 /// </summary>
 public static partial class IdempotentExtensions
 {
+    /// <summary>
+    /// Drops <paramref name="triggerName"/> if it exists, via the native <c>DROP TRIGGER IF EXISTS</c> —
+    /// supported by SQL Server (2016+), PostgreSQL, MySQL, and SQLite alike. PostgreSQL additionally requires
+    /// the owning table, via <c>ON {tableName}</c>.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="triggerName">Name of the trigger to drop.</param>
+    /// <param name="tableName">Table the trigger is defined on (only used for the PostgreSQL syntax).</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
     public static void DropTriggerIfExists(this Migration self, string triggerName, string tableName, string? schemaName = null)
     {
         schemaName ??= self.ResolveDefaultSchema();
@@ -142,15 +151,4 @@ END;");
         self.DropFunctionIfExists(functionName, schemaName);
         self.Execute.Sql(createFunctionSql);
     }
-
-    /// <summary>
-    /// Renames the index <paramref name="oldName"/> to <paramref name="newName"/> on <paramref name="tableName"/>
-    /// if it exists. Not supported on SQLite (no rename-index DDL; the index would need to be dropped and
-    /// recreated from its original definition, which this method does not have).
-    /// </summary>
-    /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Table the index is defined on.</param>
-    /// <param name="oldName">Current index name.</param>
-    /// <param name="newName">New index name.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
 }

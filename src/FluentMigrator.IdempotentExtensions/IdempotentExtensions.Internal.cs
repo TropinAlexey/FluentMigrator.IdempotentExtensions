@@ -246,6 +246,4 @@ public static partial class IdempotentExtensions
 
         return result;
     }
-
-    /// <inheritdoc cref="InsertDataIfNotExists(Migration, string, IReadOnlyDictionary{string, object?}, IReadOnlyDictionary{string, object?}?, string?)"/>
 }

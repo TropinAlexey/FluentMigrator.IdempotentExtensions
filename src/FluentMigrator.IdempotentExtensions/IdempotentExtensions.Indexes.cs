@@ -17,6 +17,24 @@ using FluentMigrator.Infrastructure;
 /// </summary>
 public static partial class IdempotentExtensions
 {
+    /// <summary>
+    /// Creates an index on <paramref name="columnName"/> if it does not already exist.
+    /// The default index name is <c>index_{columnName}</c>; supply <paramref name="indexName"/> to override.
+    /// </summary>
+    /// <remarks>
+    /// The default name does not include the table, so indexing the same column name on two tables
+    /// with defaults collides (and PostgreSQL requires index names to be unique per schema, so the
+    /// second <c>CREATE INDEX</c> would fail outright) — pass an explicit <paramref name="indexName"/>
+    /// in that case. The default is kept for backward compatibility.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="columnName">Column to index.</param>
+    /// <param name="configureIndex">Callback to configure ascending/descending and uniqueness.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
+    /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
+    /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
+    /// <param name="indexName">Explicit index name. Defaults to <c>index_{columnName}</c> if omitted.</param>
     public static IFluentSyntax? CreateIndexIfNotExists(
         this MigrationBase self,
         string tableName,
@@ -103,21 +121,15 @@ public static partial class IdempotentExtensions
     }
 
     /// <summary>
-    /// Drops a named UNIQUE or CHECK constraint from <paramref name="tableName"/> if it exists.
-    /// Works on all databases supported by FluentMigrator.
-    /// For default constraints use <see cref="DropColumnDefaultIfExists"/>.
+    /// Renames the index <paramref name="oldName"/> to <paramref name="newName"/> on <paramref name="tableName"/>
+    /// if it exists. Not supported on SQLite (no rename-index DDL; the index would need to be dropped and
+    /// recreated from its original definition, which this method does not have).
     /// </summary>
-    /// <remarks>
-    /// This issues a generic <c>DROP CONSTRAINT</c>, which covers UNIQUE and CHECK constraints on
-    /// every provider. For foreign keys prefer <see cref="DropForeignKeyIfExists"/>, for primary
-    /// keys prefer <see cref="DropPrimaryKeyIfExists"/>.
-    /// </remarks>
     /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Target table name.</param>
-    /// <param name="constraintName">Name of the constraint to drop.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database
-    /// provider (<c>dbo</c> for SQL Server, <c>public</c> for PostgreSQL, empty string for MySQL/SQLite).
-    /// Pass an explicit value to target a specific schema (e.g. multi-tenant setups).</param>
+    /// <param name="tableName">Table the index is defined on.</param>
+    /// <param name="oldName">Current index name.</param>
+    /// <param name="newName">New index name.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
     public static void RenameIndexIfExists(
         this Migration self,
         string tableName,
@@ -161,16 +173,4 @@ public static partial class IdempotentExtensions
 
         throw new NotSupportedException("RenameIndexIfExists is not supported on SQLite.");
     }
-
-    /// <summary>
-    /// Renames the constraint <paramref name="oldName"/> to <paramref name="newName"/> on
-    /// <paramref name="tableName"/> if it exists. Only supported on SQL Server, PostgreSQL and Oracle —
-    /// MySQL/MariaDB has no general-purpose constraint rename (only <c>RENAME INDEX</c>, see
-    /// <see cref="RenameIndexIfExists"/>), and SQLite has no rename-constraint DDL at all.
-    /// </summary>
-    /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Table the constraint is defined on.</param>
-    /// <param name="oldName">Current constraint name.</param>
-    /// <param name="newName">New constraint name.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
 }

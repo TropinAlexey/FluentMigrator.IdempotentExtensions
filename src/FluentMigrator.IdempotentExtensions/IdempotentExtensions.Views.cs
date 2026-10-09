@@ -17,6 +17,19 @@ using FluentMigrator.Infrastructure;
 /// </summary>
 public static partial class IdempotentExtensions
 {
+    /// <summary>
+    /// Creates <paramref name="viewName"/> if it does not already exist.
+    /// </summary>
+    /// <remarks>
+    /// On PostgreSQL and MySQL, uses <c>CREATE OR REPLACE VIEW</c>, so re-running with the same
+    /// <paramref name="selectSql"/> is a harmless no-op (the view is simply redefined identically).
+    /// On SQLite, uses the native <c>CREATE VIEW IF NOT EXISTS</c>. On SQL Server, which supports neither,
+    /// the existence check is done via <c>sys.views</c> and the view is created via dynamic SQL.
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="viewName">Name of the view to create.</param>
+    /// <param name="selectSql">The view's <c>SELECT</c> statement, without the <c>CREATE VIEW ... AS</c> prefix. Executed verbatim — trusted developer input only.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider. Ignored on SQLite (which has no schemas) — passing a non-empty value throws.</param>
     public static void CreateViewIfNotExists(
         this Migration self,
         string viewName,
@@ -79,13 +92,18 @@ END;");
     }
 
     /// <summary>
-    /// Drops <paramref name="triggerName"/> if it exists, via the native <c>DROP TRIGGER IF EXISTS</c> —
-    /// supported by SQL Server (2016+), PostgreSQL, MySQL, and SQLite alike. PostgreSQL additionally requires
-    /// the owning table, via <c>ON {tableName}</c>.
+    /// Drops and recreates <paramref name="viewName"/> in a single call — equivalent to
+    /// <see cref="DropViewIfExists"/> followed by <see cref="CreateViewIfNotExists"/>.
+    /// If the view does not exist, it is simply created.
     /// </summary>
+    /// <remarks>
+    /// On SQL Server and SQLite the replace is a DROP followed by CREATE, which discards
+    /// permissions granted on the view — re-apply them afterwards if needed. On PostgreSQL
+    /// and MySQL (<c>CREATE OR REPLACE</c>) existing grants are preserved.
+    /// </remarks>
     /// <param name="self">The migration instance.</param>
-    /// <param name="triggerName">Name of the trigger to drop.</param>
-    /// <param name="tableName">Table the trigger is defined on (only used for the PostgreSQL syntax).</param>
+    /// <param name="viewName">Name of the view to create or replace.</param>
+    /// <param name="selectSql">The view's <c>SELECT</c> statement, without the <c>CREATE VIEW ... AS</c> prefix.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
     public static void CreateOrReplaceView(
         this Migration self,
@@ -96,27 +114,4 @@ END;");
         self.DropViewIfExists(viewName, schemaName);
         self.CreateViewIfNotExists(viewName, selectSql, schemaName);
     }
-
-    /// <summary>
-    /// Inserts a row if no row matching <paramref name="keyValues"/> exists; otherwise updates the matching
-    /// row with <paramref name="additionalValues"/>. Uses provider-specific MERGE/upsert syntax:
-    /// <c>MERGE</c> on SQL Server and Oracle, <c>INSERT ... ON CONFLICT ... DO UPDATE</c> on PostgreSQL,
-    /// <c>INSERT ... ON DUPLICATE KEY UPDATE</c> on MySQL, and <c>INSERT ... ON CONFLICT ... DO UPDATE</c>
-    /// on SQLite.
-    /// </summary>
-    /// <remarks>
-    /// PostgreSQL, MySQL, and SQLite require a UNIQUE constraint (or PRIMARY KEY) on the key columns for
-    /// conflict detection to work. If no such constraint exists, the statement will fail — ensure a unique
-    /// index or constraint covers the key columns before calling this method.
-    /// Key values must be non-null (null never matches in a conflict check). On MySQL the row-alias
-    /// form is used (<c>AS new ... = new.col</c>), which requires MySQL 8.0.19+; MariaDB keeps the
-    /// legacy <c>VALUES(col)</c> form. On SQL Server the target is taken <c>WITH (HOLDLOCK)</c> to
-    /// close the check-then-act race between concurrent runners.
-    /// </remarks>
-    /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Target table name.</param>
-    /// <param name="keyValues">Column/value pairs that uniquely identify the row. Must have at least one entry.
-    /// Values are non-nullable — upsert conflict detection requires non-null keys on all providers.</param>
-    /// <param name="additionalValues">Column/value pairs to insert alongside keys / update on conflict. May be empty or null for key-only rows.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
 }

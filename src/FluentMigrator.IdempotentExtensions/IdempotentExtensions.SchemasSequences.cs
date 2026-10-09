@@ -17,6 +17,12 @@ using FluentMigrator.Infrastructure;
 /// </summary>
 public static partial class IdempotentExtensions
 {
+    /// <summary>
+    /// Creates <paramref name="schemaName"/> if it does not already exist.
+    /// Not supported on SQLite.
+    /// </summary>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="schemaName">Schema to create.</param>
     public static void CreateSchemaIfNotExists(this Migration self, string schemaName)
     {
         if (!self.Schema.Schema(schemaName).Exists())
@@ -77,20 +83,25 @@ public static partial class IdempotentExtensions
     }
 
     /// <summary>
-    /// Adds a named CHECK constraint on <paramref name="tableName"/> if it does not already exist.
-    /// Not supported on SQLite (its <c>ALTER TABLE</c> cannot add constraints to an existing table).
+    /// Alters <paramref name="sequenceName"/> if it already exists; no-op otherwise.
+    /// Not supported on MySQL/MariaDB or SQLite.
     /// </summary>
     /// <remarks>
-    /// To drop a check constraint, reuse <see cref="DropConstraintIfExists"/> — it issues a generic
-    /// <c>DROP CONSTRAINT</c>, which SQL Server, PostgreSQL, and MySQL (8.0.19+) all accept for CHECK constraints.
-    /// The <paramref name="checkSql"/> expression is executed verbatim — trusted developer input only,
-    /// never end-user input.
+    /// FluentMigrator has no <c>Alter.Sequence</c> API, so this builds and executes a raw
+    /// <c>ALTER SEQUENCE</c> statement from the supplied parameters. At least one parameter
+    /// must be non-null. Provider differences are handled internally — e.g. Oracle uses
+    /// <c>START WITH</c> instead of <c>RESTART WITH</c>, and <c>NOCYCLE</c>/<c>NOCACHE</c>
+    /// instead of <c>NO CYCLE</c>/<c>NO CACHE</c>.
     /// </remarks>
     /// <param name="self">The migration instance.</param>
-    /// <param name="tableName">Target table name.</param>
-    /// <param name="constraintName">Name of the CHECK constraint to create.</param>
-    /// <param name="checkSql">The boolean SQL expression to check, without the surrounding parentheses
-    /// (e.g. <c>"age &gt;= 0"</c>).</param>
+    /// <param name="sequenceName">Name of the sequence to alter.</param>
+    /// <param name="incrementBy">New increment value.</param>
+    /// <param name="minValue">New minimum value.</param>
+    /// <param name="maxValue">New maximum value.</param>
+    /// <param name="restartWith">Restart the sequence at this value. Not supported on Oracle (use <paramref name="startWith"/> instead).</param>
+    /// <param name="startWith">Set the start value. On Oracle, also restarts the sequence.</param>
+    /// <param name="cache">Number of values to cache. Pass <c>0</c> to disable caching.</param>
+    /// <param name="cycle">Whether the sequence should cycle when it reaches its limit.</param>
     /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
     public static void AlterSequenceIfExists(
         this Migration self,
@@ -139,19 +150,4 @@ public static partial class IdempotentExtensions
         var terminator = isOracle ? "" : ";";
         self.Execute.Sql($"ALTER SEQUENCE {QualifyTable(provider, schemaName, sequenceName)} {string.Join(" ", clauses)}{terminator}");
     }
-
-    /// <summary>
-    /// Drops and recreates <paramref name="viewName"/> in a single call — equivalent to
-    /// <see cref="DropViewIfExists"/> followed by <see cref="CreateViewIfNotExists"/>.
-    /// If the view does not exist, it is simply created.
-    /// </summary>
-    /// <remarks>
-    /// On SQL Server and SQLite the replace is a DROP followed by CREATE, which discards
-    /// permissions granted on the view — re-apply them afterwards if needed. On PostgreSQL
-    /// and MySQL (<c>CREATE OR REPLACE</c>) existing grants are preserved.
-    /// </remarks>
-    /// <param name="self">The migration instance.</param>
-    /// <param name="viewName">Name of the view to create or replace.</param>
-    /// <param name="selectSql">The view's <c>SELECT</c> statement, without the <c>CREATE VIEW ... AS</c> prefix.</param>
-    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
 }
