@@ -8,6 +8,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/TropinAlexey/FluentMigrator.IdempotentExtensions/ci.yml?style=flat-square&logo=github&label=CI)](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/TropinAlexey/FluentMigrator.IdempotentExtensions?style=flat-square)](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/blob/main/LICENSE)
 [![.NET Standard 2.0](https://img.shields.io/badge/.NET%20Standard-2.0-512bd4?style=flat-square&logo=dotnet)](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions)
+[![.NET 8.0+](https://img.shields.io/badge/.NET-8.0%2B-512bd4?style=flat-square&logo=dotnet)](https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions)
 
 ## Why
 
@@ -87,11 +88,21 @@ using FluentMigrator.IdempotentExtensions.SqlServer;
 this.DropDefaultConstraintIfExists("users", "status"); // finds the auto-named DEFAULT via sys.default_constraints
 ```
 
+## What's new in 1.7.3
+
+First NuGet release since 1.7.0 — 1.7.1 and 1.7.2 were tagged but never published, so upgrading from 1.7.0 also brings the 1.7.2 changes below.
+
+- MySQL/MariaDB: backslashes in string literals are now escaped (previously `C:\new` was stored with a newline).
+- `NaN`/infinity `float`/`double` values throw `ArgumentException` instead of emitting broken SQL.
+- New `net8.0` target alongside `netstandard2.0`; `DateOnly`/`TimeOnly` literals supported on `net8.0`.
+- XML documentation is now shipped — IntelliSense for every public method.
+- No public API changes.
+
 ## What's new in 1.7.2
 
 - Security hardening: provider-aware identifier quoting/escaping across all raw SQL; see the GitHub changelog for details.
 - Correctness fixes: `CreateTableIfNotExists` honors `schemaName`, Oracle `DropViewIfExists`, PostgreSQL booleans, null-key rejection in `UpsertData`.
-- Behavior changes: default index is now `index_{table}_{column}`; key-only upserts are `DO NOTHING` on PostgreSQL/SQLite.
+- Behavior changes: none in defaults. New optional overrides: `indexName` on `CreateIndexIfNotExists`, `constraintName` on `AddColumnDefaultIfExists`, `logTableName` on `CreateLogTableIfNotExists`; key-only upserts are `DO NOTHING` on PostgreSQL/SQLite.
 
 ## What's new in 1.7.1
 

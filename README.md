@@ -14,6 +14,7 @@
   <a href="https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/blob/main/LICENSE"><img src="https://img.shields.io/github/license/TropinAlexey/FluentMigrator.IdempotentExtensions?style=flat-square" alt="License"></a>
   <a href="https://github.com/TropinAlexey/FluentMigrator.IdempotentExtensions/tags"><img src="https://img.shields.io/github/v/tag/TropinAlexey/FluentMigrator.IdempotentExtensions?style=flat-square&label=Latest%20Tag" alt="GitHub tag"></a>
   <img src="https://img.shields.io/badge/.NET%20Standard-2.0-512bd4?style=flat-square&logo=dotnet" alt=".NET Standard 2.0">
+  <img src="https://img.shields.io/badge/.NET-8.0%2B-512bd4?style=flat-square&logo=dotnet" alt=".NET 8.0+">
 </p>
 
 ---
@@ -143,13 +144,13 @@ this.RenameConstraintIfExists("users", "uc_users_email", "uc_users_email_v2"); /
 
 ```csharp
 this.AddColumnDefaultIfExists("users", "status", 0); // set DEFAULT only if the column exists; not on SQLite
-this.DropColumnDefaultIfExists("users", "status"); // any provider, incl. auto-named SQL Server constraints
+this.DropColumnDefaultIfExists("users", "status"); // incl. auto-named SQL Server constraints; not on SQLite
 ```
 
 **Schemas**
 
 ```csharp
-this.CreateSchemaIfNotExists("billing");
+this.CreateSchemaIfNotExists("billing"); // not on SQLite or Oracle
 this.DropSchemaIfExists("billing_old"); // not on SQLite or Oracle
 ```
 
@@ -205,7 +206,7 @@ this.ExecuteSqlIfNotExists(
     "CREATE LOGIN app_user WITH PASSWORD = 'secret'");
 ```
 
-**Maintenance** — pure upkeep, safe to re-run every deploy, empty `Down()`
+**Maintenance** — pure upkeep, no schema changes, empty `Down()` (runs once per migration version — see Maintenance below)
 
 ```csharp
 this.ReorganizeIndexes("client_appointments");
@@ -266,7 +267,7 @@ Alter.Table("users").AlterColumn("status").AsInt32().NotNullable();
 <details>
 <summary><b>Regular index & statistics maintenance</b></summary>
 
-`ReorganizeIndexes` + `UpdateStatistics` are pure maintenance — no schema changes — so they are safe to re-run on every deploy. Pass table names as parameters (nothing is hardcoded) and loop over as many tables as you need:
+`ReorganizeIndexes` + `UpdateStatistics` are pure maintenance — no schema changes — so re-applying them is always safe. FluentMigrator runs each migration version once, so add a new maintenance migration whenever you want another pass. Pass table names as parameters (nothing is hardcoded) and loop over as many tables as you need:
 
 ```csharp
 foreach (var table in new[] { "client_appointments", "client_cash_income", "client_appointment_result_procedures" })
@@ -459,6 +460,15 @@ Drops a named index only if it exists.
 
 #### `RenameIndexIfExists()`
 
+```csharp
+void RenameIndexIfExists(
+    this Migration self,
+    string tableName,
+    string oldName,
+    string newName,
+    string? schemaName = null)
+```
+
 Renames an index if it exists. **Not supported on SQLite.**
 
 </details>
@@ -493,7 +503,16 @@ Drops a named UNIQUE or CHECK constraint if it exists. For default values use `D
 
 #### `CreateCheckConstraintIfNotExists()`
 
-Adds a named CHECK constraint if it doesn't already exist. **Not supported on SQLite.**
+```csharp
+void CreateCheckConstraintIfNotExists(
+    this Migration self,
+    string tableName,
+    string constraintName,
+    string checkSql,
+    string? schemaName = null)
+```
+
+Adds a named CHECK constraint if it doesn't already exist. `checkSql` is the boolean expression only (e.g. `"age >= 0"`) and is embedded as-is — pass trusted developer input only. To drop it, use `DropConstraintIfExists`. **Not supported on SQLite.**
 
 #### `CreatePrimaryKeyIfNotExists()`
 
@@ -556,6 +575,15 @@ Drops a named foreign key if it exists. **Not supported on SQLite.**
 
 #### `RenameConstraintIfExists()`
 
+```csharp
+void RenameConstraintIfExists(
+    this Migration self,
+    string tableName,
+    string oldName,
+    string newName,
+    string? schemaName = null)
+```
+
 Renames a constraint if it exists. **SQL Server, PostgreSQL, and Oracle.**
 
 </details>
@@ -587,7 +615,7 @@ void DropColumnDefaultIfExists(
     string? schemaName = null)
 ```
 
-Drops the default value on a column, on **any** provider. On SQL Server, locates the auto-named DEFAULT constraint via `sys.default_constraints`. On PostgreSQL/MySQL, `ALTER COLUMN ... DROP DEFAULT` is itself a no-op when no default is set. **Not supported on SQLite.**
+Drops the default value on a column on every provider except SQLite. On SQL Server, locates the auto-named DEFAULT constraint via `sys.default_constraints`. On PostgreSQL/MySQL, `ALTER COLUMN ... DROP DEFAULT` is itself a no-op when no default is set; on Oracle it runs `MODIFY ... DEFAULT NULL`. **Not supported on SQLite.**
 
 ```csharp
 this.DropColumnDefaultIfExists("users", "status");
@@ -782,14 +810,15 @@ this.ExecuteSqlIfNotExists(
 <details>
 <summary><b>Maintenance</b> — <code>ReorganizeIndexes</code>, <code>UpdateStatistics</code></summary>
 
-Pure maintenance operations: defragment indexes and refresh optimizer statistics. No schema changes, so both methods are safe to re-run on every deploy. Tables are always passed as parameters — nothing is hardcoded. If a table does not exist, the statement fails server-side (no silent skip).
+Pure maintenance operations: defragment indexes and refresh optimizer statistics. No schema changes, so re-applying them is always safe. Note that FluentMigrator runs each migration version once — the SQL executes when the migration is applied, not on every deploy; create a new migration version for each maintenance pass. Tables are always passed as parameters — nothing is hardcoded. If a table does not exist, the statement fails server-side (no silent skip).
 
 ```csharp
 // Defragment all indexes on a table
 void ReorganizeIndexes(
     this Migration self,
     string tableName,
-    string? schemaName = null)
+    string? schemaName = null,
+    bool concurrently = false) // PostgreSQL only: REINDEX TABLE CONCURRENTLY
 
 // Refresh optimizer statistics; samplePercent is 1-100, null = server default
 void UpdateStatistics(
@@ -821,14 +850,15 @@ What each method actually executes per database:
 
 | Method | SQL Server | PostgreSQL | MySQL / MariaDB | SQLite | Oracle |
 |--------|:---:|:---:|:---:|:---:|:---:|
-| `ReorganizeIndexes("t")` | `ALTER INDEX ALL ON [dbo].[t] REORGANIZE;` | `REINDEX TABLE public.t;` | `OPTIMIZE TABLE t;` (also refreshes stats) | `REINDEX t;` | PL/SQL loop: `ALTER INDEX ... REBUILD` for every index on `t` |
-| `UpdateStatistics("t", 30)` | `UPDATE STATISTICS [dbo].[t] WITH SAMPLE 30 PERCENT;` | `ANALYZE public.t;` | `ANALYZE TABLE t;` | `ANALYZE t;` | `DBMS_STATS.GATHER_TABLE_STATS(..., estimate_percent => 30);` |
+| `ReorganizeIndexes("t")` | `ALTER INDEX ALL ON [dbo].[t] REORGANIZE;` | `REINDEX TABLE "public"."t";` (`CONCURRENTLY` with `concurrently: true`) | ``OPTIMIZE TABLE `t`;`` (also refreshes stats) | `REINDEX "t";` | PL/SQL loop: `ALTER INDEX ... REBUILD` for every index on `t` |
+| `UpdateStatistics("t", 30)` | `UPDATE STATISTICS [dbo].[t] WITH SAMPLE 30 PERCENT;` | `ANALYZE "public"."t";` | ``ANALYZE TABLE `t`;`` | `ANALYZE "t";` | `DBMS_STATS.GATHER_TABLE_STATS(..., estimate_percent => 30);` |
 
 Notes:
 
 - `samplePercent` is honored **only on SQL Server and Oracle**. PostgreSQL, MySQL, and SQLite have no per-table sampling clause, so the parameter is ignored there (their `ANALYZE` uses server defaults).
 - Pass `samplePercent: null` for server-default behavior everywhere: no sampling clause on SQL Server, `DBMS_STATS.AUTO_SAMPLE_SIZE` on Oracle.
 - Values outside 1–100 throw `ArgumentOutOfRangeException` immediately, before any SQL runs.
+- **PostgreSQL locking:** plain `REINDEX TABLE` takes an `ACCESS EXCLUSIVE` lock. On a busy table run it in a maintenance window or pass `concurrently: true` (PostgreSQL 12+, slower but lock-friendly). Note that `REINDEX ... CONCURRENTLY` cannot run inside a transaction, so wrap such a migration with FluentMigrator's `[Migration(..., TransactionBehavior.None)]`.
 
 </details>
 
@@ -911,6 +941,19 @@ Drops the `DEFAULT` constraint on a column by locating it via `sys.default_const
 > **FluentMigrator version:** requires `FluentMigrator 6.*` or later.
 
 ## What's New
+
+<details>
+<summary><b>v1.7.3</b> — MySQL literal escaping, non-finite floats, net8.0 target, IntelliSense docs (no new methods)</summary>
+
+> **First NuGet release since 1.7.0.** The 1.7.1 and 1.7.2 tags were never published to NuGet.org (a release-pipeline failure), so upgrading from 1.7.0 also brings every change listed under v1.7.2 below — read its *Behavior changes* line.
+
+- **Security / correctness:** on MySQL/MariaDB backslashes in string and `char` literals (`InsertDataIfNotExists`, `UpsertData`, …) are now escaped — previously `C:\new` was stored with a newline, and a trailing `\` could break out of the literal. Note: if the server runs with `sql_mode=NO_BACKSLASH_ESCAPES`, the doubled backslash is stored literally.
+- **Fail fast:** `float`/`double` `NaN` and infinities now throw `ArgumentException` instead of emitting SQL that fails (or silently differs) at execution time.
+- **New target:** the core package now ships `net8.0` alongside `netstandard2.0`; on `net8.0` `DateOnly`/`TimeOnly` values are accepted as literals. Every previously accepted input behaves identically on both targets.
+- **IntelliSense:** both packages now include XML documentation for every public method (previously none was shipped); doc/signature mismatches fail the build.
+- **Packaging:** `Microsoft.Extensions.DependencyInjection` 10.0.12, SourceLink 10.0.401; NuGet audit (including transitive packages) gates the build; CI actions pinned by SHA, CodeQL added.
+- **Breaking changes:** none in the public API (no members added, removed or changed). Behavior differs from 1.7.2 only for the inputs above (MySQL backslashes, non-finite floats).
+</details>
 
 <details>
 <summary><b>v1.7.2</b> — SQL hardening + packaging security (no new methods)</summary>
