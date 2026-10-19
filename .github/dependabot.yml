@@ -4,6 +4,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # init and analyze must share one version, or CodeQL fails at runtime
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
   - package-ecosystem: "nuget"
     directory: "/"
     schedule:
