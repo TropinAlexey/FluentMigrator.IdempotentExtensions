@@ -21,7 +21,7 @@
     <PackageReference Include="FluentMigrator.Runner.Oracle" Version="8.0.1" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
     <PackageReference Include="Testcontainers.MsSql" Version="4.16.0" />
-    <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.16.0" />
     <PackageReference Include="Testcontainers.MySql" Version="4.16.0" />
     <PackageReference Include="Testcontainers.Oracle" Version="4.16.0" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
