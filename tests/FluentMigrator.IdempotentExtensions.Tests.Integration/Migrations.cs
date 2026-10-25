@@ -455,7 +455,7 @@ internal sealed class SeedClientDocumentsMigration : Migration
         // document 1 has a linked client (client_id IS NOT NULL)
         Insert.IntoTable("test_client_documents").Row(new { id = 1, document_id = 1, client_id = 100 });
         // document 2 has a link but client_id IS NULL
-        Insert.IntoTable("test_client_documents").Row(new { id = 2, document_id = 2, client_id = (int?)null });
+        Insert.IntoTable("test_client_documents").Row(new { id = 2, document_id = 2, client_id = null });
         // document 3 has no link at all
     }
 
