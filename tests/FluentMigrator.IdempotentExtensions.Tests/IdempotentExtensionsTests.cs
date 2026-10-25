@@ -957,7 +957,7 @@ internal sealed class SeedClientDocumentsMigration : Migration
     public override void Up()
     {
         Insert.IntoTable("test_client_documents").Row(new { id = 1, document_id = 1, client_id = 100 });
-        Insert.IntoTable("test_client_documents").Row(new { id = 2, document_id = 2, client_id = (int?)null });
+        Insert.IntoTable("test_client_documents").Row(new { id = 2, document_id = 2, client_id = null });
     }
 
     public override void Down() { }
