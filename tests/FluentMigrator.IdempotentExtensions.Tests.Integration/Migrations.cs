@@ -404,3 +404,127 @@ internal sealed class MaintainTableMigration : Migration
 
     public override void Down() { }
 }
+
+// ---- related-row data operations: parent/child tables ----
+
+[Migration(37)]
+internal sealed class CreateDocumentsTableMigration : Migration
+{
+    public override void Up()
+    {
+        this.CreateTableIfNotExists("test_documents", t => t
+            .WithColumn("id").AsInt32().NotNullable().PrimaryKey()
+            .WithColumn("is_visible_for_client").AsBoolean().NotNullable().WithDefaultValue(false));
+    }
+
+    public override void Down() => Delete.Table("test_documents");
+}
+
+[Migration(38)]
+internal sealed class CreateClientDocumentsTableMigration : Migration
+{
+    public override void Up()
+    {
+        this.CreateTableIfNotExists("test_client_documents", t => t
+            .WithColumn("id").AsInt32().NotNullable().PrimaryKey()
+            .WithColumn("document_id").AsInt32().NotNullable()
+            .WithColumn("client_id").AsInt32().Nullable());
+    }
+
+    public override void Down() => Delete.Table("test_client_documents");
+}
+
+[Migration(39)]
+internal sealed class SeedDocumentsMigration : Migration
+{
+    public override void Up()
+    {
+        Insert.IntoTable("test_documents").Row(new { id = 1, is_visible_for_client = false });
+        Insert.IntoTable("test_documents").Row(new { id = 2, is_visible_for_client = false });
+        Insert.IntoTable("test_documents").Row(new { id = 3, is_visible_for_client = false });
+    }
+
+    public override void Down() { }
+}
+
+[Migration(40)]
+internal sealed class SeedClientDocumentsMigration : Migration
+{
+    public override void Up()
+    {
+        // document 1 has a linked client (client_id IS NOT NULL)
+        Insert.IntoTable("test_client_documents").Row(new { id = 1, document_id = 1, client_id = 100 });
+        // document 2 has a link but client_id IS NULL
+        Insert.IntoTable("test_client_documents").Row(new { id = 2, document_id = 2, client_id = (int?)null });
+        // document 3 has no link at all
+    }
+
+    public override void Down() { }
+}
+
+[Migration(41)]
+internal sealed class UpdateDocumentsIfRelatedExistsMigration : Migration
+{
+    public override void Up()
+    {
+        this.UpdateDataIfRelatedExists("test_documents",
+            setValues: new Dictionary<string, object?> { ["is_visible_for_client"] = true },
+            related: new RelatedRows("test_client_documents", new Dictionary<string, string> { ["document_id"] = "id" })
+            {
+                NotNullColumns = ["client_id"],
+            },
+            keyValues: new Dictionary<string, object?> { ["is_visible_for_client"] = false });
+    }
+
+    public override void Down() { }
+}
+
+[Migration(42)]
+internal sealed class UpdateDocumentsIfRelatedNotExistsMigration : Migration
+{
+    public override void Up()
+    {
+        this.UpdateDataIfRelatedNotExists("test_documents",
+            setValues: new Dictionary<string, object?> { ["is_visible_for_client"] = true },
+            related: new RelatedRows("test_client_documents", new Dictionary<string, string> { ["document_id"] = "id" })
+            {
+                NotNullColumns = ["client_id"],
+            },
+            keyValues: new Dictionary<string, object?> { ["is_visible_for_client"] = false });
+    }
+
+    public override void Down() { }
+}
+
+[Migration(43)]
+internal sealed class DeleteDocumentsIfRelatedExistsMigration : Migration
+{
+    public override void Up()
+    {
+        this.DeleteDataIfRelatedExists("test_documents",
+            related: new RelatedRows("test_client_documents", new Dictionary<string, string> { ["document_id"] = "id" })
+            {
+                NotNullColumns = ["client_id"],
+            },
+            keyValues: new Dictionary<string, object?> { ["is_visible_for_client"] = false });
+    }
+
+    public override void Down() { }
+}
+
+[Migration(44)]
+internal sealed class DeleteDocumentsIfRelatedNotExistsMigration : Migration
+{
+    public override void Up()
+    {
+        this.DeleteDataIfRelatedNotExists("test_documents",
+            related: new RelatedRows("test_client_documents", new Dictionary<string, string> { ["document_id"] = "id" })
+            {
+                NotNullColumns = ["client_id"],
+            },
+            keyValues: new Dictionary<string, object?> { ["is_visible_for_client"] = false });
+    }
+
+    public override void Down() { }
+}
+

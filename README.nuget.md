@@ -88,6 +88,13 @@ using FluentMigrator.IdempotentExtensions.SqlServer;
 this.DropDefaultConstraintIfExists("users", "status"); // finds the auto-named DEFAULT via sys.default_constraints
 ```
 
+## What's new in 1.7.5
+
+- `UpdateDataIfRelatedExists` / `UpdateDataIfRelatedNotExists` — update rows when a correlated row in another table exists (or does not exist).
+- `DeleteDataIfRelatedExists` / `DeleteDataIfRelatedNotExists` — delete rows by the same correlated-existence condition.
+- `RelatedRows` — describes the related table, join columns, optional related-table filters, and `IS NOT NULL` columns.
+- Portable correlated `EXISTS` subquery works on SQL Server, PostgreSQL, MySQL/MariaDB, SQLite and Oracle.
+
 ## What's new in 1.7.3
 
 First NuGet release since 1.7.0 — 1.7.1 and 1.7.2 were tagged but never published, so upgrading from 1.7.0 also brings the 1.7.2 changes below.
@@ -118,7 +125,7 @@ The complete API reference, compatibility matrix, use cases, and changelog live 
 Highlights:
 
 - Tables, columns, indexes, constraints and keys, column defaults, schemas, sequences
-- Idempotent data operations: `InsertDataIfNotExists`, `UpsertData`, `UpdateDataIfExists`, `DeleteDataIfExists`
+- Idempotent data operations: `InsertDataIfNotExists`, `UpsertData`, `UpdateDataIfExists`, `DeleteDataIfExists`, `UpdateDataIfRelatedExists`/`NotExists`, `DeleteDataIfRelatedExists`/`NotExists`
 - Views, triggers, functions, conditional SQL (`ExecuteSqlIfExists` / `ExecuteSqlIfNotExists`)
 - Maintenance: `ReorganizeIndexes`, `UpdateStatistics`
 - `schemaName` is auto-detected per provider (`dbo` on SQL Server, `public` on PostgreSQL); requires `FluentMigrator 6.*` or later

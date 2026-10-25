@@ -37,4 +37,6 @@ BEGIN
     RETURN 1;
 END;
 $$ LANGUAGE plpgsql;";
+
+    protected override string BoolLiteral(bool value) => value ? "TRUE" : "FALSE";
 }

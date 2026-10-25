@@ -52,6 +52,9 @@ public abstract class IdempotentExtensionsIntegrationTestsBase : IAsyncLifetime
     /// </summary>
     protected virtual bool SupportsAlterColumnKeepingNullable => true;
 
+    /// <summary>Provider-specific boolean literal for raw SQL assertions.</summary>
+    protected abstract string BoolLiteral(bool value);
+
     private string _connectionString = null!;
 
     public async Task InitializeAsync()
@@ -452,4 +455,82 @@ public abstract class IdempotentExtensionsIntegrationTestsBase : IAsyncLifetime
         var ex = Record.Exception(() => Run(new MaintainTableMigration()));
         Assert.Null(ex);
     }
+
+    // ---- related-row data operations ----
+
+    [Fact]
+    public void UpdateDataIfRelatedExists_OnlyUpdatesRowsWithFilledRelatedNotNull()
+    {
+        Run(new CreateDocumentsTableMigration());
+        Run(new CreateClientDocumentsTableMigration());
+        Run(new SeedDocumentsMigration());
+        Run(new SeedClientDocumentsMigration());
+        Run(new UpdateDocumentsIfRelatedExistsMigration());
+
+        Assert.Equal(1, CountDocumentsWithVisibility(true));
+        Assert.Equal(2, CountDocumentsWithVisibility(false));
+    }
+
+    [Fact]
+    public void UpdateDataIfRelatedExists_IsIdempotent()
+    {
+        Run(new CreateDocumentsTableMigration());
+        Run(new CreateClientDocumentsTableMigration());
+        Run(new SeedDocumentsMigration());
+        Run(new SeedClientDocumentsMigration());
+        Run(new UpdateDocumentsIfRelatedExistsMigration());
+        Run(new UpdateDocumentsIfRelatedExistsMigration());
+
+        Assert.Equal(1, CountDocumentsWithVisibility(true));
+        Assert.Equal(2, CountDocumentsWithVisibility(false));
+    }
+
+    [Fact]
+    public void UpdateDataIfRelatedNotExists_OnlyUpdatesRowsWithoutFilledRelatedNotNull()
+    {
+        Run(new CreateDocumentsTableMigration());
+        Run(new CreateClientDocumentsTableMigration());
+        Run(new SeedDocumentsMigration());
+        Run(new SeedClientDocumentsMigration());
+        Run(new UpdateDocumentsIfRelatedNotExistsMigration());
+
+        Assert.Equal(2, CountDocumentsWithVisibility(true));
+        Assert.Equal(1, CountDocumentsWithVisibility(false));
+    }
+
+    [Fact]
+    public void DeleteDataIfRelatedExists_OnlyDeletesRowsWithFilledRelatedNotNull()
+    {
+        Run(new CreateDocumentsTableMigration());
+        Run(new CreateClientDocumentsTableMigration());
+        Run(new SeedDocumentsMigration());
+        Run(new SeedClientDocumentsMigration());
+        Run(new DeleteDocumentsIfRelatedExistsMigration());
+
+        Assert.Equal(2, CountRows("test_documents"));
+        Assert.Equal(0, CountDocumentsWithVisibility(true));
+    }
+
+    [Fact]
+    public void DeleteDataIfRelatedNotExists_OnlyDeletesRowsWithoutFilledRelatedNotNull()
+    {
+        Run(new CreateDocumentsTableMigration());
+        Run(new CreateClientDocumentsTableMigration());
+        Run(new SeedDocumentsMigration());
+        Run(new SeedClientDocumentsMigration());
+        Run(new DeleteDocumentsIfRelatedNotExistsMigration());
+
+        Assert.Equal(1, CountRows("test_documents"));
+        Assert.Equal(1, CountDocumentsWithVisibility(false));
+    }
+
+    private long CountDocumentsWithVisibility(bool isVisible)
+    {
+        using var connection = CreateConnection(_connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM test_documents WHERE is_visible_for_client = {BoolLiteral(isVisible)}";
+        return Convert.ToInt64(command.ExecuteScalar());
+    }
+
 }

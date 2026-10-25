@@ -48,7 +48,7 @@ public static partial class IdempotentExtensions
         schemaName ??= self.ResolveDefaultSchema();
         var provider = self.GetProvider();
 
-        var setClause = string.Join(", ", setValues.Select(kv => $"{QuoteIdent(provider, kv.Key)} = {FormatSqlValue(kv.Value, provider)}"));
+        var setClause = BuildSetClause(provider, setValues);
         var whereClause = string.Join(" AND ", keyValues.Select(kv => FormatSqlPredicate(provider, kv.Key, kv.Value)));
 
         self.Execute.Sql($"UPDATE {QualifyTable(provider, schemaName, tableName)} SET {setClause} WHERE {whereClause};");
@@ -307,6 +307,202 @@ ON CONFLICT ({keyColumnList}) {conflictClause};");
         object keyValues,
         string? schemaName = null)
         => DeleteDataIfExists(self, tableName, ObjectToDictionary(keyValues), schemaName);
+
+    /// <summary>
+    /// Updates rows in <paramref name="tableName"/> when at least one matching row exists in the related
+    /// table described by <paramref name="related"/>. Uses a portable correlated <c>EXISTS</c> subquery
+    /// instead of provider-specific <c>UPDATE ... FROM</c>/<c>JOIN</c> syntax.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The generated SQL has the form:
+    /// <c>UPDATE &lt;target&gt; SET ... WHERE &lt;target-filter&gt; AND EXISTS (SELECT 1 FROM &lt;related&gt; WHERE &lt;related&gt;.&lt;col&gt; = &lt;target&gt;.&lt;col&gt; ...)</c>.
+    /// Tables are referenced by fully qualified names (<c>schema.table.column</c>) with no aliases so the
+    /// statement runs unmodified on SQL Server, PostgreSQL, MySQL/MariaDB, SQLite and Oracle.
+    /// </para>
+    /// <para>
+    /// Idempotency is opt-in, just like <see cref="UpdateDataIfExists(Migration, string, IReadOnlyDictionary{string, object?}, IReadOnlyDictionary{string, object?}, string?)"/>:
+    /// include a <paramref name="keyValues"/> filter that excludes already-updated rows (for example,
+    /// the old value you are changing from). Without such a filter the <c>UPDATE</c> will rewrite the same
+    /// rows with the same values on every run — safe, but it may fire triggers each time.
+    /// </para>
+    /// <para>
+    /// This method does not guard the existence of either table. Wrap it in <c>ExecuteSqlIfExists</c> or
+    /// check <c>Schema.Table(...).Exists()</c> first if the table may not exist.
+    /// Self-references (related table is the same as the target table) are not supported because MySQL
+    /// rejects referencing the modified table in a subquery (error 1093).
+    /// </para>
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="setValues">Column/value pairs to set on the matched rows. Must contain at least one entry.</param>
+    /// <param name="related">Description of the related table and how it joins to the target.</param>
+    /// <param name="keyValues">Optional equality / <c>IS NULL</c> filters on the target table.</param>
+    /// <param name="notNullColumns">Optional target columns that must be <c>IS NOT NULL</c>.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    /// <exception cref="ArgumentException">Validation rules are violated (empty <paramref name="setValues"/>, empty <see cref="RelatedRows.JoinColumns"/>, overlapping <see cref="RelatedRows.Where"/> and <see cref="RelatedRows.NotNullColumns"/>, or related table equals target table).</exception>
+    public static void UpdateDataIfRelatedExists(
+        this Migration self,
+        string tableName,
+        IReadOnlyDictionary<string, object?> setValues,
+        RelatedRows related,
+        IReadOnlyDictionary<string, object?>? keyValues = null,
+        IReadOnlyCollection<string>? notNullColumns = null,
+        string? schemaName = null)
+    {
+        if (setValues.Count == 0)
+            throw new ArgumentException("At least one column to set is required.", nameof(setValues));
+
+        var (provider, resolvedSchemaName, whereClause) = PrepareRelatedOperation(
+            self, tableName, related, keyValues, notNullColumns, schemaName, exists: true);
+        var setClause = BuildSetClause(provider, setValues);
+
+        self.Execute.Sql($"UPDATE {QualifyTable(provider, resolvedSchemaName, tableName)} SET {setClause} WHERE {whereClause};");
+    }
+
+    /// <summary>
+    /// Updates rows in <paramref name="tableName"/> when no matching row exists in the related table.
+    /// See <see cref="UpdateDataIfRelatedExists(Migration, string, IReadOnlyDictionary{string, object?}, RelatedRows, IReadOnlyDictionary{string, object?}?, IReadOnlyCollection{string}?, string?)"/>
+    /// for details on portability, idempotency and limitations.
+    /// </summary>
+    public static void UpdateDataIfRelatedNotExists(
+        this Migration self,
+        string tableName,
+        IReadOnlyDictionary<string, object?> setValues,
+        RelatedRows related,
+        IReadOnlyDictionary<string, object?>? keyValues = null,
+        IReadOnlyCollection<string>? notNullColumns = null,
+        string? schemaName = null)
+    {
+        if (setValues.Count == 0)
+            throw new ArgumentException("At least one column to set is required.", nameof(setValues));
+
+        var (provider, resolvedSchemaName, whereClause) = PrepareRelatedOperation(
+            self, tableName, related, keyValues, notNullColumns, schemaName, exists: false);
+        var setClause = BuildSetClause(provider, setValues);
+
+        self.Execute.Sql($"UPDATE {QualifyTable(provider, resolvedSchemaName, tableName)} SET {setClause} WHERE {whereClause};");
+    }
+
+    /// <summary>
+    /// Deletes rows from <paramref name="tableName"/> when at least one matching row exists in the related
+    /// table described by <paramref name="related"/>. Uses a portable correlated <c>EXISTS</c> subquery.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The generated SQL has the form:
+    /// <c>DELETE FROM &lt;target&gt; WHERE &lt;target-filter&gt; AND EXISTS (SELECT 1 FROM &lt;related&gt; WHERE ...)</c>.
+    /// See <see cref="UpdateDataIfRelatedExists(Migration, string, IReadOnlyDictionary{string, object?}, RelatedRows, IReadOnlyDictionary{string, object?}?, IReadOnlyCollection{string}?, string?)"/>
+    /// for portability, idempotency and validation notes.
+    /// </para>
+    /// <para>
+    /// <paramref name="keyValues"/> may be null or empty, in which case the <c>WHERE</c> clause contains only
+    /// the <c>EXISTS</c> condition. This deletes every target row that has a related match — use carefully.
+    /// </para>
+    /// </remarks>
+    /// <param name="self">The migration instance.</param>
+    /// <param name="tableName">Target table name.</param>
+    /// <param name="related">Description of the related table and how it joins to the target.</param>
+    /// <param name="keyValues">Optional equality / <c>IS NULL</c> filters on the target table.</param>
+    /// <param name="notNullColumns">Optional target columns that must be <c>IS NOT NULL</c>.</param>
+    /// <param name="schemaName">Database schema. If <c>null</c>, auto-detected from the database provider.</param>
+    /// <exception cref="ArgumentException">Validation rules are violated (empty <see cref="RelatedRows.JoinColumns"/>, overlapping <see cref="RelatedRows.Where"/> and <see cref="RelatedRows.NotNullColumns"/>, or related table equals target table).</exception>
+    public static void DeleteDataIfRelatedExists(
+        this Migration self,
+        string tableName,
+        RelatedRows related,
+        IReadOnlyDictionary<string, object?>? keyValues = null,
+        IReadOnlyCollection<string>? notNullColumns = null,
+        string? schemaName = null)
+    {
+        var (provider, resolvedSchemaName, whereClause) = PrepareRelatedOperation(
+            self, tableName, related, keyValues, notNullColumns, schemaName, exists: true);
+
+        self.Execute.Sql($"DELETE FROM {QualifyTable(provider, resolvedSchemaName, tableName)} WHERE {whereClause};");
+    }
+
+    /// <summary>
+    /// Deletes rows from <paramref name="tableName"/> when no matching row exists in the related table.
+    /// See <see cref="DeleteDataIfRelatedExists(Migration, string, RelatedRows, IReadOnlyDictionary{string, object?}?, IReadOnlyCollection{string}?, string?)"/>
+    /// for details on portability, idempotency and limitations.
+    /// </summary>
+    public static void DeleteDataIfRelatedNotExists(
+        this Migration self,
+        string tableName,
+        RelatedRows related,
+        IReadOnlyDictionary<string, object?>? keyValues = null,
+        IReadOnlyCollection<string>? notNullColumns = null,
+        string? schemaName = null)
+    {
+        var (provider, resolvedSchemaName, whereClause) = PrepareRelatedOperation(
+            self, tableName, related, keyValues, notNullColumns, schemaName, exists: false);
+
+        self.Execute.Sql($"DELETE FROM {QualifyTable(provider, resolvedSchemaName, tableName)} WHERE {whereClause};");
+    }
+
+    /// <inheritdoc cref="UpdateDataIfRelatedExists(Migration, string, IReadOnlyDictionary{string, object?}, RelatedRows, IReadOnlyDictionary{string, object?}?, IReadOnlyCollection{string}?, string?)"/>
+    public static void UpdateDataIfRelatedExists(
+        this Migration self,
+        string tableName,
+        object setValues,
+        RelatedRows related,
+        object? keyValues = null,
+        IReadOnlyCollection<string>? notNullColumns = null,
+        string? schemaName = null)
+        => UpdateDataIfRelatedExists(
+            self, tableName,
+            ObjectToDictionary(setValues),
+            related,
+            keyValues is not null ? ObjectToDictionary(keyValues) : null,
+            notNullColumns,
+            schemaName);
+
+    /// <inheritdoc cref="UpdateDataIfRelatedNotExists(Migration, string, IReadOnlyDictionary{string, object?}, RelatedRows, IReadOnlyDictionary{string, object?}?, IReadOnlyCollection{string}?, string?)"/>
+    public static void UpdateDataIfRelatedNotExists(
+        this Migration self,
+        string tableName,
+        object setValues,
+        RelatedRows related,
+        object? keyValues = null,
+        IReadOnlyCollection<string>? notNullColumns = null,
+        string? schemaName = null)
+        => UpdateDataIfRelatedNotExists(
+            self, tableName,
+            ObjectToDictionary(setValues),
+            related,
+            keyValues is not null ? ObjectToDictionary(keyValues) : null,
+            notNullColumns,
+            schemaName);
+
+    /// <inheritdoc cref="DeleteDataIfRelatedExists(Migration, string, RelatedRows, IReadOnlyDictionary{string, object?}?, IReadOnlyCollection{string}?, string?)"/>
+    public static void DeleteDataIfRelatedExists(
+        this Migration self,
+        string tableName,
+        RelatedRows related,
+        object? keyValues = null,
+        IReadOnlyCollection<string>? notNullColumns = null,
+        string? schemaName = null)
+        => DeleteDataIfRelatedExists(
+            self, tableName,
+            related,
+            keyValues is not null ? ObjectToDictionary(keyValues) : null,
+            notNullColumns,
+            schemaName);
+
+    /// <inheritdoc cref="DeleteDataIfRelatedNotExists(Migration, string, RelatedRows, IReadOnlyDictionary{string, object?}?, IReadOnlyCollection{string}?, string?)"/>
+    public static void DeleteDataIfRelatedNotExists(
+        this Migration self,
+        string tableName,
+        RelatedRows related,
+        object? keyValues = null,
+        IReadOnlyCollection<string>? notNullColumns = null,
+        string? schemaName = null)
+        => DeleteDataIfRelatedNotExists(
+            self, tableName,
+            related,
+            keyValues is not null ? ObjectToDictionary(keyValues) : null,
+            notNullColumns,
+            schemaName);
 
     /// <inheritdoc cref="UpsertData(Migration, string, IReadOnlyDictionary{string, object}, IReadOnlyDictionary{string, object?}?, string?)"/>
     public static void UpsertData(

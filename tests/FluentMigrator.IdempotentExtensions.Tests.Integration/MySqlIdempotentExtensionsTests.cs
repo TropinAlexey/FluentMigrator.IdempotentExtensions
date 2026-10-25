@@ -38,4 +38,6 @@ public sealed class MySqlIdempotentExtensionsTests : IdempotentExtensionsIntegra
 CREATE TRIGGER {triggerName} AFTER INSERT ON {tableName} FOR EACH ROW
 BEGIN
 END";
+
+    protected override string BoolLiteral(bool value) => value ? "1" : "0";
 }
