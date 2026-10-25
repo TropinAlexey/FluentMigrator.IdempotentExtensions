@@ -65,10 +65,18 @@ public static partial class IdempotentExtensions
             ? QuoteIdent(provider, tableName)
             : $"{QuoteIdent(provider, schemaName)}.{QuoteIdent(provider, tableName)}";
 
-    private static string FormatSqlPredicate(DatabaseProvider provider, string column, object? value)
-        => value is null
-            ? $"{QuoteIdent(provider, column)} IS NULL"
-            : $"{QuoteIdent(provider, column)} = {FormatSqlValue(value, provider)}";
+    private static string BuildSetClause(DatabaseProvider provider, IReadOnlyDictionary<string, object?> setValues)
+        => string.Join(", ", setValues.Select(kv => $"{QuoteIdent(provider, kv.Key)} = {FormatSqlValue(kv.Value, provider)}"));
+
+    private static string FormatSqlPredicate(DatabaseProvider provider, string column, object? value, string? tableQualifier = null)
+    {
+        var qualifiedColumn = tableQualifier is null
+            ? QuoteIdent(provider, column)
+            : $"{tableQualifier}.{QuoteIdent(provider, column)}";
+        return value is null
+            ? $"{qualifiedColumn} IS NULL"
+            : $"{qualifiedColumn} = {FormatSqlValue(value, provider)}";
+    }
 
     /// <summary>
     /// Formats a value as a SQL literal. Only whitelisted CLR types are supported — anything else
@@ -149,9 +157,11 @@ public static partial class IdempotentExtensions
     /// Resolves the default schema name for the current migration's database provider, used whenever
     /// a caller omits <c>schemaName</c>. Detected via <see cref="GetProvider"/>.
     /// </summary>
-    private static string ResolveDefaultSchema(this MigrationBase self)
+    private static string ResolveDefaultSchema(this MigrationBase self) => ResolveDefaultSchema(self.GetProvider());
+
+    private static string ResolveDefaultSchema(DatabaseProvider provider)
     {
-        return self.GetProvider() switch
+        return provider switch
         {
             DatabaseProvider.SqlServer => "dbo",
             DatabaseProvider.Postgres => "public",
@@ -245,5 +255,98 @@ public static partial class IdempotentExtensions
         }
 
         return result;
+    }
+
+    private static void ValidateRelatedRows(RelatedRows related, string tableName, string schemaName, DatabaseProvider provider)
+    {
+        if (related.JoinColumns.Count == 0)
+            throw new ArgumentException("At least one join column pair is required.", nameof(related));
+
+        var overlap = related.Where.Keys
+            .Intersect(related.NotNullColumns, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (overlap.Count > 0)
+        {
+            throw new ArgumentException(
+                $"A column cannot appear in both {nameof(RelatedRows.Where)} and {nameof(RelatedRows.NotNullColumns)}: {string.Join(", ", overlap)}.",
+                nameof(related));
+        }
+
+        var relatedSchemaName = related.SchemaName ?? ResolveDefaultSchema(provider);
+        if (string.Equals(related.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(relatedSchemaName, schemaName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "Related table cannot be the same as the target table. Self-reference is not supported because MySQL rejects referencing the modified table in a subquery (error 1093).",
+                nameof(related));
+        }
+    }
+
+    private static (DatabaseProvider Provider, string ResolvedSchemaName, string WhereClause) PrepareRelatedOperation(
+        Migration self,
+        string tableName,
+        RelatedRows related,
+        IReadOnlyDictionary<string, object?>? keyValues,
+        IReadOnlyCollection<string>? notNullColumns,
+        string? schemaName,
+        bool exists)
+    {
+        schemaName ??= self.ResolveDefaultSchema();
+        var provider = self.GetProvider();
+        ValidateRelatedRows(related, tableName, schemaName, provider);
+        var whereClause = BuildRelatedWhereClause(provider, schemaName, tableName, related, keyValues, notNullColumns, exists);
+        return (provider, schemaName, whereClause);
+    }
+
+    private static string BuildRelatedWhereClause(
+        DatabaseProvider provider,
+        string schemaName,
+        string tableName,
+        RelatedRows related,
+        IReadOnlyDictionary<string, object?>? keyValues,
+        IReadOnlyCollection<string>? notNullColumns,
+        bool exists)
+    {
+        var targetTable = QualifyTable(provider, schemaName, tableName);
+        var relatedSchemaName = related.SchemaName ?? ResolveDefaultSchema(provider);
+        var relatedTable = QualifyTable(provider, relatedSchemaName, related.TableName);
+
+        var conditions = new List<string>();
+
+        if (keyValues is { Count: > 0 })
+        {
+            foreach (var kv in keyValues)
+                conditions.Add(FormatSqlPredicate(provider, kv.Key, kv.Value));
+        }
+
+        if (notNullColumns is { Count: > 0 })
+        {
+            foreach (var col in notNullColumns)
+                conditions.Add($"{QuoteIdent(provider, col)} IS NOT NULL");
+        }
+
+        var relatedConditions = new List<string>();
+        foreach (var jc in related.JoinColumns)
+        {
+            relatedConditions.Add(
+                $"{relatedTable}.{QuoteIdent(provider, jc.Key)} = {targetTable}.{QuoteIdent(provider, jc.Value)}");
+        }
+
+        if (related.Where is { Count: > 0 })
+        {
+            foreach (var kv in related.Where)
+                relatedConditions.Add(FormatSqlPredicate(provider, kv.Key, kv.Value, relatedTable));
+        }
+
+        if (related.NotNullColumns is { Count: > 0 })
+        {
+            foreach (var col in related.NotNullColumns)
+                relatedConditions.Add($"{relatedTable}.{QuoteIdent(provider, col)} IS NOT NULL");
+        }
+
+        var existsKeyword = exists ? "EXISTS" : "NOT EXISTS";
+        conditions.Add($"{existsKeyword} (SELECT 1 FROM {relatedTable} WHERE {string.Join(" AND ", relatedConditions)})");
+
+        return string.Join(" AND ", conditions);
     }
 }

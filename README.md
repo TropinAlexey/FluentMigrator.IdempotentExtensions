@@ -701,7 +701,7 @@ Drops a sequence if it exists. **Not supported on MySQL/MariaDB or SQLite.**
 </details>
 
 <details>
-<summary><b>Data</b> — <code>InsertDataIfNotExists</code>, <code>UpsertData</code>, <code>UpdateDataIfExists</code>, <code>DeleteDataIfExists</code></summary>
+<summary><b>Data</b> — <code>InsertDataIfNotExists</code>, <code>UpsertData</code>, <code>UpdateDataIfExists</code>, <code>DeleteDataIfExists</code>, <code>UpdateDataIfRelatedExists</code>/<code>NotExists</code>, <code>DeleteDataIfRelatedExists</code>/<code>NotExists</code></summary>
 
 #### `InsertDataIfNotExists()`
 
@@ -742,6 +742,37 @@ this.UpdateDataIfExists("statuses",
 
 this.DeleteDataIfExists("statuses", new { code = "DEPRECATED" });
 ```
+
+#### `UpdateDataIfRelatedExists()` / `UpdateDataIfRelatedNotExists()` / `DeleteDataIfRelatedExists()` / `DeleteDataIfRelatedNotExists()`
+
+Portable `UPDATE`/`DELETE` helpers that match rows based on the existence (or absence) of a correlated row in another table. They generate a provider-agnostic correlated `EXISTS` subquery:
+
+```sql
+UPDATE <target> SET <set>
+WHERE <target-filter> AND [NOT] EXISTS (
+    SELECT 1 FROM <related>
+    WHERE <related>.<rc1> = <target>.<tc1> [AND ...] [AND <related-filter>])
+```
+
+Tables are referenced by fully qualified names (`schema.table.column`) with no aliases, so the statement runs unmodified on SQL Server, PostgreSQL, MySQL/MariaDB, SQLite and Oracle.
+
+```csharp
+// Mark documents as visible when they have a client_documents link with client_id set.
+this.UpdateDataIfRelatedExists("documents",
+    setValues: new Dictionary<string, object?> { ["is_visible_for_client"] = true },
+    related: new RelatedRows("client_documents", new Dictionary<string, string> { ["document_id"] = "id" })
+    {
+        NotNullColumns = ["client_id"],
+    },
+    keyValues: new Dictionary<string, object?> { ["is_visible_for_client"] = false });
+```
+
+- `keyValues` and `notNullColumns` are optional on the target table; omitting them makes the condition purely `[NOT] EXISTS`.
+- `RelatedRows.Where` supports the same equality / `IS NULL` filters as the other data methods.
+- `RelatedRows.NotNullColumns` adds `IS NOT NULL` filters on the related table.
+- **Self-references are not supported**: MySQL rejects referencing the modified table in a subquery (error 1093).
+- **Idempotency is opt-in**: include a `keyValues` filter that excludes already-updated rows (for example, the old value you are changing from). Without it, the statement is still safe, but it may fire triggers on every run.
+- These methods do not guard table existence; wrap them in `ExecuteSqlIfExists` or check `Schema.Table(...).Exists()` if the related table may not exist.
 
 </details>
 
@@ -962,6 +993,15 @@ Drops the `DEFAULT` constraint on a column by locating it via `sys.default_const
 - **Correctness:** `CreateTableIfNotExists` now honors `schemaName`; `DropPrimaryKeyIfExists` uses `Delete.PrimaryKey`; `DropViewIfExists` works on Oracle; booleans emit `TRUE`/`FALSE` on PostgreSQL; `byte[]`/`DateTimeOffset` literals supported, unknown value types throw instead of embedding `ToString()`; `UpsertData` rejects null keys, casts typeless `NULL`s in `MERGE`, uses `HOLDLOCK` on SQL Server, `DO NOTHING` on PostgreSQL/SQLite for key-only upserts, and the non-deprecated `AS new` form on MySQL 8.0.19+; `InsertDataIfNotExists` rejects key/additional overlap; `AlterSequenceIfExists(restartWith:)` on Oracle throws instead of silently skipping.
 - **Behavior changes vs 1.7.1:** none in defaults — all fixes are backward compatible. New optional overrides: `indexName` on `CreateIndexIfNotExists` (pass it when indexing the same column on several tables), `constraintName` on `AddColumnDefaultIfExists` (SQL Server), `logTableName` on `CreateLogTableIfNotExists`. Empty `additionalValues` upsert is `DO NOTHING` on PostgreSQL/SQLite (was a pointless self-update); `conditionSql` with `;` is rejected (it never executed server-side anyway); non-empty `schemaName` on SQLite `CreateViewIfNotExists` throws instead of silently targeting the wrong schema.
 - **Packaging:** single lockstep version in `Directory.Build.props`; SourceLink enabled; NuGet Trusted Publishing (OIDC) in the release workflow; Dependabot for actions + NuGet.
+</details>
+
+<details>
+<summary><b>v1.7.5</b> — UPDATE/DELETE by related rows</summary>
+
+- `UpdateDataIfRelatedExists` / `UpdateDataIfRelatedNotExists` — update target rows when a correlated row in another table exists (or does not exist).
+- `DeleteDataIfRelatedExists` / `DeleteDataIfRelatedNotExists` — delete target rows by the same correlated-existence condition.
+- `RelatedRows` — describes the related table, join columns, optional related-table filters, and `IS NOT NULL` columns.
+- All four generate a portable correlated `EXISTS` subquery that works on SQL Server, PostgreSQL, MySQL/MariaDB, SQLite and Oracle without per-provider branching.
 </details>
 
 <details>

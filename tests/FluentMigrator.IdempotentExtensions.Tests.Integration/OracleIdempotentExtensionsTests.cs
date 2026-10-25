@@ -41,4 +41,6 @@ CREATE FUNCTION {functionName} RETURN NUMBER IS
 BEGIN
     RETURN 1;
 END;";
+
+    protected override string BoolLiteral(bool value) => value ? "1" : "0";
 }

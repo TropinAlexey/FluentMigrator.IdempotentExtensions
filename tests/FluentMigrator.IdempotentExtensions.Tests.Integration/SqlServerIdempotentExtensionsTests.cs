@@ -30,4 +30,6 @@ END";
 
     protected override string BuildCreateFunctionSql(string functionName) =>
         $"CREATE FUNCTION {functionName}() RETURNS INT AS BEGIN RETURN 1; END";
+
+    protected override string BoolLiteral(bool value) => value ? "1" : "0";
 }

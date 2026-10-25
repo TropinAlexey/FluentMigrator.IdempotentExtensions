@@ -413,6 +413,82 @@ public sealed class IdempotentExtensionsTests : IDisposable
         Assert.Throws<ArgumentOutOfRangeException>(() => Run(new UpdateStatisticsInvalidSampleMigration()));
     }
 
+    [Fact]
+    public void UpdateDataIfRelatedExists_OnlyUpdatesLinkedWithNotNull()
+    {
+        Run(new CreateDocumentsTableMigration());
+        Run(new CreateClientDocumentsTableMigration());
+        Run(new SeedDocumentsMigration());
+        Run(new SeedClientDocumentsMigration());
+        Run(new UpdateDocumentsIfRelatedExistsMigration());
+
+        Assert.Equal(1, CountDocumentsWithVisibility(true));
+        Assert.Equal(2, CountDocumentsWithVisibility(false));
+    }
+
+    [Fact]
+    public void UpdateDataIfRelatedExists_IsIdempotent()
+    {
+        Run(new CreateDocumentsTableMigration());
+        Run(new CreateClientDocumentsTableMigration());
+        Run(new SeedDocumentsMigration());
+        Run(new SeedClientDocumentsMigration());
+        Run(new UpdateDocumentsIfRelatedExistsMigration());
+        var ex = Record.Exception(() => Run(new UpdateDocumentsIfRelatedExistsMigration()));
+        Assert.Null(ex);
+
+        Assert.Equal(1, CountDocumentsWithVisibility(true));
+        Assert.Equal(2, CountDocumentsWithVisibility(false));
+    }
+
+    [Fact]
+    public void UpdateDataIfRelatedNotExists_OnlyUpdatesUnlinkedOrNull()
+    {
+        Run(new CreateDocumentsTableMigration());
+        Run(new CreateClientDocumentsTableMigration());
+        Run(new SeedDocumentsMigration());
+        Run(new SeedClientDocumentsMigration());
+        Run(new UpdateDocumentsIfRelatedNotExistsMigration());
+
+        Assert.Equal(2, CountDocumentsWithVisibility(true));
+        Assert.Equal(1, CountDocumentsWithVisibility(false));
+    }
+
+    [Fact]
+    public void DeleteDataIfRelatedExists_OnlyDeletesLinkedWithNotNull()
+    {
+        Run(new CreateDocumentsTableMigration());
+        Run(new CreateClientDocumentsTableMigration());
+        Run(new SeedDocumentsMigration());
+        Run(new SeedClientDocumentsMigration());
+        Run(new DeleteDocumentsIfRelatedExistsMigration());
+
+        Assert.Equal(2, CountRows("test_documents"));
+        Assert.Equal(0, CountDocumentsWithVisibility(true));
+    }
+
+    [Fact]
+    public void DeleteDataIfRelatedNotExists_OnlyDeletesUnlinkedOrNull()
+    {
+        Run(new CreateDocumentsTableMigration());
+        Run(new CreateClientDocumentsTableMigration());
+        Run(new SeedDocumentsMigration());
+        Run(new SeedClientDocumentsMigration());
+        Run(new DeleteDocumentsIfRelatedNotExistsMigration());
+
+        Assert.Equal(1, CountRows("test_documents"));
+        Assert.Equal(1, CountDocumentsWithVisibility(false));
+    }
+
+    private long CountDocumentsWithVisibility(bool isVisible)
+    {
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM test_documents WHERE is_visible_for_client = {(isVisible ? 1 : 0)}";
+        return (long)command.ExecuteScalar()!;
+    }
+
     public void Dispose()
     {
         if (File.Exists(_dbPath))
@@ -834,5 +910,121 @@ internal sealed class MaintainTableMigration : Migration
 internal sealed class UpdateStatisticsInvalidSampleMigration : Migration
 {
     public override void Up() => this.UpdateStatistics("test_users", samplePercent: 101, schemaName: "");
+    public override void Down() { }
+}
+
+internal sealed class CreateDocumentsTableMigration : Migration
+{
+    public override void Up()
+    {
+        this.CreateTableIfNotExists("test_documents", t => t
+            .WithColumn("id").AsInt32().NotNullable().PrimaryKey()
+            .WithColumn("is_visible_for_client").AsBoolean().NotNullable().WithDefaultValue(false),
+            schemaName: "");
+    }
+
+    public override void Down() => Delete.Table("test_documents");
+}
+
+internal sealed class CreateClientDocumentsTableMigration : Migration
+{
+    public override void Up()
+    {
+        this.CreateTableIfNotExists("test_client_documents", t => t
+            .WithColumn("id").AsInt32().NotNullable().PrimaryKey()
+            .WithColumn("document_id").AsInt32().NotNullable()
+            .WithColumn("client_id").AsInt32().Nullable(),
+            schemaName: "");
+    }
+
+    public override void Down() => Delete.Table("test_client_documents");
+}
+
+internal sealed class SeedDocumentsMigration : Migration
+{
+    public override void Up()
+    {
+        Insert.IntoTable("test_documents").Row(new { id = 1, is_visible_for_client = false });
+        Insert.IntoTable("test_documents").Row(new { id = 2, is_visible_for_client = false });
+        Insert.IntoTable("test_documents").Row(new { id = 3, is_visible_for_client = false });
+    }
+
+    public override void Down() { }
+}
+
+internal sealed class SeedClientDocumentsMigration : Migration
+{
+    public override void Up()
+    {
+        Insert.IntoTable("test_client_documents").Row(new { id = 1, document_id = 1, client_id = 100 });
+        Insert.IntoTable("test_client_documents").Row(new { id = 2, document_id = 2, client_id = default(int?) });
+    }
+
+    public override void Down() { }
+}
+
+internal sealed class UpdateDocumentsIfRelatedExistsMigration : Migration
+{
+    public override void Up()
+    {
+        this.UpdateDataIfRelatedExists("test_documents",
+            setValues: new Dictionary<string, object?> { ["is_visible_for_client"] = true },
+            related: new RelatedRows("test_client_documents", new Dictionary<string, string> { ["document_id"] = "id" })
+            {
+                NotNullColumns = ["client_id"],
+            },
+            keyValues: new Dictionary<string, object?> { ["is_visible_for_client"] = false },
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+internal sealed class UpdateDocumentsIfRelatedNotExistsMigration : Migration
+{
+    public override void Up()
+    {
+        this.UpdateDataIfRelatedNotExists("test_documents",
+            setValues: new Dictionary<string, object?> { ["is_visible_for_client"] = true },
+            related: new RelatedRows("test_client_documents", new Dictionary<string, string> { ["document_id"] = "id" })
+            {
+                NotNullColumns = ["client_id"],
+            },
+            keyValues: new Dictionary<string, object?> { ["is_visible_for_client"] = false },
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+internal sealed class DeleteDocumentsIfRelatedExistsMigration : Migration
+{
+    public override void Up()
+    {
+        this.DeleteDataIfRelatedExists("test_documents",
+            related: new RelatedRows("test_client_documents", new Dictionary<string, string> { ["document_id"] = "id" })
+            {
+                NotNullColumns = ["client_id"],
+            },
+            keyValues: new Dictionary<string, object?> { ["is_visible_for_client"] = false },
+            schemaName: "");
+    }
+
+    public override void Down() { }
+}
+
+internal sealed class DeleteDocumentsIfRelatedNotExistsMigration : Migration
+{
+    public override void Up()
+    {
+        this.DeleteDataIfRelatedNotExists("test_documents",
+            related: new RelatedRows("test_client_documents", new Dictionary<string, string> { ["document_id"] = "id" })
+            {
+                NotNullColumns = ["client_id"],
+            },
+            keyValues: new Dictionary<string, object?> { ["is_visible_for_client"] = false },
+            schemaName: "");
+    }
+
     public override void Down() { }
 }
