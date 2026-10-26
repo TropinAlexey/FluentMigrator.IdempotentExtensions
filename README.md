@@ -974,6 +974,15 @@ Drops the `DEFAULT` constraint on a column by locating it via `sys.default_const
 ## What's New
 
 <details>
+<summary><b>v1.7.5</b> — UPDATE/DELETE by related rows</summary>
+
+- `UpdateDataIfRelatedExists` / `UpdateDataIfRelatedNotExists` — update target rows when a correlated row in another table exists (or does not exist).
+- `DeleteDataIfRelatedExists` / `DeleteDataIfRelatedNotExists` — delete target rows by the same correlated-existence condition.
+- `RelatedRows` — describes the related table, join columns, optional related-table filters, and `IS NOT NULL` columns.
+- All four generate a portable correlated `EXISTS` subquery that works on SQL Server, PostgreSQL, MySQL/MariaDB, SQLite and Oracle without per-provider branching.
+</details>
+
+<details>
 <summary><b>v1.7.3</b> — MySQL literal escaping, non-finite floats, net8.0 target, IntelliSense docs (no new methods)</summary>
 
 > **First NuGet release since 1.7.0.** The 1.7.1 and 1.7.2 tags were never published to NuGet.org (a release-pipeline failure), so upgrading from 1.7.0 also brings every change listed under v1.7.2 below — read its *Behavior changes* line.
@@ -993,15 +1002,6 @@ Drops the `DEFAULT` constraint on a column by locating it via `sys.default_const
 - **Correctness:** `CreateTableIfNotExists` now honors `schemaName`; `DropPrimaryKeyIfExists` uses `Delete.PrimaryKey`; `DropViewIfExists` works on Oracle; booleans emit `TRUE`/`FALSE` on PostgreSQL; `byte[]`/`DateTimeOffset` literals supported, unknown value types throw instead of embedding `ToString()`; `UpsertData` rejects null keys, casts typeless `NULL`s in `MERGE`, uses `HOLDLOCK` on SQL Server, `DO NOTHING` on PostgreSQL/SQLite for key-only upserts, and the non-deprecated `AS new` form on MySQL 8.0.19+; `InsertDataIfNotExists` rejects key/additional overlap; `AlterSequenceIfExists(restartWith:)` on Oracle throws instead of silently skipping.
 - **Behavior changes vs 1.7.1:** none in defaults — all fixes are backward compatible. New optional overrides: `indexName` on `CreateIndexIfNotExists` (pass it when indexing the same column on several tables), `constraintName` on `AddColumnDefaultIfExists` (SQL Server), `logTableName` on `CreateLogTableIfNotExists`. Empty `additionalValues` upsert is `DO NOTHING` on PostgreSQL/SQLite (was a pointless self-update); `conditionSql` with `;` is rejected (it never executed server-side anyway); non-empty `schemaName` on SQLite `CreateViewIfNotExists` throws instead of silently targeting the wrong schema.
 - **Packaging:** single lockstep version in `Directory.Build.props`; SourceLink enabled; NuGet Trusted Publishing (OIDC) in the release workflow; Dependabot for actions + NuGet.
-</details>
-
-<details>
-<summary><b>v1.7.5</b> — UPDATE/DELETE by related rows</summary>
-
-- `UpdateDataIfRelatedExists` / `UpdateDataIfRelatedNotExists` — update target rows when a correlated row in another table exists (or does not exist).
-- `DeleteDataIfRelatedExists` / `DeleteDataIfRelatedNotExists` — delete target rows by the same correlated-existence condition.
-- `RelatedRows` — describes the related table, join columns, optional related-table filters, and `IS NOT NULL` columns.
-- All four generate a portable correlated `EXISTS` subquery that works on SQL Server, PostgreSQL, MySQL/MariaDB, SQLite and Oracle without per-provider branching.
 </details>
 
 <details>
